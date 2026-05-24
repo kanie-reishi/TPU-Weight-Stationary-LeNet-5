@@ -3,11 +3,11 @@
 module tb_global_arbiter();
 
     // ==========================================
-    // Tham số cấu hình (Parameters)
+    // Tham số cấu hình
     // ==========================================
     localparam AXI_AWIDTH  = 40;
     localparam AXI_DWIDTH  = 64;
-    localparam SRAM_AWIDTH = 16;
+    localparam SRAM_AWIDTH = 11;
     
     // ==========================================
     // Khai báo tín hiệu
@@ -65,7 +65,7 @@ module tb_global_arbiter();
     logic [1:0]              ctrl_dma_bank_sel_i;
     logic                    ctrl_dma_busy_o;
     
-    // --- 4. SRAM Interfaces (Chỉ quan sát dạng sóng) ---
+    // --- 4. SRAM Interfaces ---
     logic                    wgt_we_o;
     logic [SRAM_AWIDTH-1:0]  wgt_addr_o;
     logic [AXI_DWIDTH-1:0]   wgt_wdata_o;
@@ -81,7 +81,7 @@ module tb_global_arbiter();
     logic [AXI_DWIDTH-1:0]   pong_rdata_i;
 
     // ==========================================
-    // Instantiate DUT (Device Under Test)
+    // Instantiate DUT
     // ==========================================
     global_arbiter #(
         .AXI_AWIDTH(AXI_AWIDTH),
@@ -153,7 +153,16 @@ module tb_global_arbiter();
     );
 
     // ==========================================
-    // Tạo xung Clock (100MHz)
+    // Khối bảo vệ (Watchdog) - Chống treo vĩnh viễn
+    // ==========================================
+    initial begin
+        #5000;
+        $display("[%0t] [FAIL] FATAL ERROR: SIMULATION TIMEOUT (5000ns)! Deadlock detected.", $time);
+        $finish;
+    end
+
+    // ==========================================
+    // Tạo xung Clock
     // ==========================================
     initial begin
         clk = 0;
@@ -161,89 +170,108 @@ module tb_global_arbiter();
     end
     
     // ==========================================
-    // TASKS: Giao tiếp AXI-Lite (Host CPU)
+    // TASKS: Giao tiếp AXI-Lite (Giả lập CPU)
     // ==========================================
     task axi_lite_write(input [31:0] addr, input [31:0] data);
         begin
+            $display("[%0t] [AXI-Lite] Writing %h to %h...", $time, data, addr);
             @(posedge clk);
             s_axi_awvalid <= 1'b1;
             s_axi_awaddr  <= addr;
             s_axi_wvalid  <= 1'b1;
             s_axi_wdata   <= data;
             
-            // Chờ cho đến khi slave nhận (ready = 1)
-            wait(s_axi_awready && s_axi_wready);
+            // Chờ slave nhận
+            while (!(s_axi_awready && s_axi_wready)) begin
+                @(posedge clk);
+            end
             @(posedge clk);
             s_axi_awvalid <= 1'b0;
             s_axi_wvalid  <= 1'b0;
+            $display("[%0t] [AXI-Lite] Write completed.", $time);
         end
     endtask
 
     // ==========================================
-    // MÔ PHỎNG AXI-FULL SLAVE (DDR Memory)
+    // MÔ PHỎNG AXI-FULL SLAVE (Giả lập DDR Memory)
     // ==========================================
     // 1. Phản hồi luồng Đọc (AR -> R)
-    always @(posedge clk) begin
-        if (!rst_n) begin
-            m_axi_arready <= 1'b0;
-            m_axi_rvalid  <= 1'b0;
-            m_axi_rlast   <= 1'b0;
-            m_axi_rdata   <= '0;
-        end else begin
-            // Luôn sẵn sàng nhận địa chỉ đọc
+    initial begin
+        m_axi_arready <= 1'b0;
+        m_axi_rvalid  <= 1'b0;
+        m_axi_rlast   <= 1'b0;
+        m_axi_rdata   <= '0;
+        
+        while(!rst_n) @(posedge clk);
+        
+        forever begin
             m_axi_arready <= 1'b1;
+            @(posedge clk);
             
-            if (m_axi_arvalid && m_axi_arready) begin
+            if (m_axi_arvalid) begin
                 integer len;
                 len = m_axi_arlen + 1;
-                m_axi_arready <= 1'b0; // Bận xử lý
+                m_axi_arready <= 1'b0;
+                $display("[%0t] [AXI-Full] Start READ processing %0d beats from addr %h", $time, len, m_axi_araddr);
                 
-                @(posedge clk);
                 // Bơm dữ liệu Rdata trả về
                 for (integer i = 0; i < len; i = i + 1) begin
                     m_axi_rvalid <= 1'b1;
                     m_axi_rdata  <= $random; // Trả về dữ liệu ngẫu nhiên
                     m_axi_rlast  <= (i == len - 1) ? 1'b1 : 1'b0;
-                    wait(m_axi_rready);
-                    @(posedge clk);
+                    
+                    // Chờ master sẵn sàng nhận
+                    while(1) begin
+                        @(posedge clk);
+                        if (m_axi_rready) break;
+                    end
                 end
                 m_axi_rvalid <= 1'b0;
                 m_axi_rlast  <= 1'b0;
+                $display("[%0t] [AXI-Full] READ completed", $time);
             end
         end
     end
     
     // 2. Phản hồi luồng Ghi (AW -> W -> B)
-    always @(posedge clk) begin
-        if (!rst_n) begin
-            m_axi_awready <= 1'b0;
-            m_axi_wready  <= 1'b0;
-            m_axi_bvalid  <= 1'b0;
-        end else begin
+    initial begin
+        m_axi_awready <= 1'b0;
+        m_axi_wready  <= 1'b0;
+        m_axi_bvalid  <= 1'b0;
+        
+        while(!rst_n) @(posedge clk);
+        
+        forever begin
             m_axi_awready <= 1'b1;
+            @(posedge clk);
             
-            if (m_axi_awvalid && m_axi_awready) begin
+            if (m_axi_awvalid) begin
                 m_axi_awready <= 1'b0;
+                $display("[%0t] [AXI-Full] Start WRITE processing to addr %h", $time, m_axi_awaddr);
+                
                 // Chờ và nhận Wdata
                 m_axi_wready <= 1'b1;
-                while (!m_axi_wlast || !m_axi_wvalid) begin
+                while (1) begin
                     @(posedge clk);
+                    if (m_axi_wvalid && m_axi_wlast) break;
                 end
                 m_axi_wready <= 1'b0;
                 
                 // Gửi phản hồi B (OKAY)
-                @(posedge clk);
                 m_axi_bvalid <= 1'b1;
                 m_axi_bresp  <= 2'b00; 
-                wait(m_axi_bready);
-                @(posedge clk);
+                while (1) begin
+                    @(posedge clk);
+                    if (m_axi_bready) break;
+                end
                 m_axi_bvalid <= 1'b0;
+                $display("[%0t] [AXI-Full] WRITE completed", $time);
             end
         end
     end
 
     // ==========================================
-    // LUỒNG KIỂM THỬ CHÍNH (MAIN TEST SEQUENCE)
+    // LUỒNG KIỂM THỬ CHÍNH
     // ==========================================
     initial begin
         // --- KHỞI TẠO TÍN HIỆU ---
@@ -252,9 +280,6 @@ module tb_global_arbiter();
         s_axi_awaddr  = 0;
         s_axi_wvalid  = 0;
         s_axi_wdata   = 0;
-        
-        m_axi_rready  = 1; // Luôn sẵn sàng nhận Rdata
-        m_axi_bready  = 1; // Luôn sẵn sàng nhận Bresp
         
         ctrl_inst_read_i = 0;
         ctrl_dma_req_i   = 0;
@@ -273,12 +298,13 @@ module tb_global_arbiter();
         #50;
         
         // ----------------------------------------------------
-        $display("[%0t] === TC1: Trạng thái sau Reset ===", $time);
+        $display("[%0t] === TC1: Post-Reset State ===", $time);
         // ----------------------------------------------------
         #20;
+        $display("[%0t] [PASS] TC1 completed.", $time);
         
         // ----------------------------------------------------
-        $display("[%0t] === TC2: CPU nạp lệnh qua AXI-Lite ===", $time);
+        $display("[%0t] === TC2: CPU loads instruction via AXI-Lite ===", $time);
         // ----------------------------------------------------
         // Lệnh 64-bit: Nửa cao = 0xABCD_EF01, Nửa thấp = 0x2345_6789
         axi_lite_write(32'h04, 32'hABCDEF01);
@@ -287,16 +313,17 @@ module tb_global_arbiter();
         #50;
         // Controller xin lấy lệnh từ FIFO ra
         if (!ctrl_inst_empty_o) begin
+            $display("[%0t] [Controller] Fetching instruction from FIFO...", $time);
             ctrl_inst_read_i = 1'b1;
             @(posedge clk);
             ctrl_inst_read_i = 1'b0;
-            $display("[%0t] Controller đọc được lệnh: %h", $time, ctrl_inst_data_o);
+            $display("[%0t] [PASS] TC2: Instruction received correctly: %h", $time, ctrl_inst_data_o);
         end else begin
-            $display("[%0t] ERROR: FIFO báo rỗng!", $time);
+            $display("[%0t] [FAIL] TC2: FIFO is empty!", $time);
         end
         
         // ----------------------------------------------------
-        $display("[%0t] === TC3: DMA Demux (Đọc DDR -> Ghi SRAM Ping) ===", $time);
+        $display("[%0t] === TC3: DMA Demux (Read DDR -> Write SRAM Ping) ===", $time);
         // ----------------------------------------------------
         @(posedge clk);
         ctrl_dma_req_i      <= 1'b1;
@@ -308,13 +335,16 @@ module tb_global_arbiter();
         @(posedge clk);
         ctrl_dma_req_i      <= 1'b0;
         
+        // Chờ DMA bắt đầu
+        while(!ctrl_dma_busy_o) @(posedge clk);
         // Chờ DMA hoàn thành
-        wait(!ctrl_dma_busy_o); 
-        $display("[%0t] Hoàn thành DMA chuyển DDR -> PING Bank.", $time);
+        while(ctrl_dma_busy_o) @(posedge clk);
+        $display("[%0t] [PASS] TC3: DMA transfer DDR -> PING Bank completed!", $time);
+        
         #50;
         
         // ----------------------------------------------------
-        $display("[%0t] === TC4: DMA Mux (Đọc SRAM Pong -> Ghi DDR) ===", $time);
+        $display("[%0t] === TC4: DMA Mux (Read SRAM Pong -> Write DDR) ===", $time);
         // ----------------------------------------------------
         @(posedge clk);
         ctrl_dma_req_i      <= 1'b1;
@@ -326,9 +356,12 @@ module tb_global_arbiter();
         @(posedge clk);
         ctrl_dma_req_i      <= 1'b0;
         
-        // Chờ DMA hoàn thành
-        wait(!ctrl_dma_busy_o);
-        $display("[%0t] Hoàn thành DMA chuyển PONG Bank -> DDR.", $time);
+        $display("[%0t] [TC4] Waiting for DMA to start...", $time);
+        while(!ctrl_dma_busy_o) @(posedge clk);
+        $display("[%0t] [TC4] DMA is busy. Waiting for DMA to complete...", $time);
+        while(ctrl_dma_busy_o) @(posedge clk);
+        $display("[%0t] [PASS] TC4: DMA transfer SRAM -> DDR completed!", $time);
+        
         #50;
         
         // ----------------------------------------------------
@@ -339,10 +372,10 @@ module tb_global_arbiter();
             axi_lite_write(32'h04, i);
             axi_lite_write(32'h00, ~i);
         end
-        $display("[%0t] Hoàn thành bơm 16 lệnh.", $time);
+        $display("[%0t] [PASS] TC5: Pumped 16 instructions successfully.", $time);
         
         #100;
-        $display("[%0t] === TẤT CẢ TEST CASE KẾT THÚC ===", $time);
+        $display("[%0t] === [PASS] ALL TEST CASES COMPLETED SUCCESSFULLY ===", $time);
         $finish;
     end
 

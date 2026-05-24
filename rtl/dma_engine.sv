@@ -3,7 +3,7 @@
 module axi_full_dma_engine #(
     parameter AXI_AWIDTH  = 40, // 40-bit cho KR260 UltraScale+
     parameter AXI_DWIDTH  = 64, // 64-bit dữ liệu (8 bytes/nhịp)
-    parameter SRAM_AWIDTH = 16  // Không gian địa chỉ cho Local Bank
+    parameter SRAM_AWIDTH = 11  // Không gian địa chỉ cho Local Bank
 )(
     input  logic clk,
     input  logic rst_n,

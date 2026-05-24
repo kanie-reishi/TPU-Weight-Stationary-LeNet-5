@@ -3,7 +3,8 @@
 module global_arbiter #(
     parameter AXI_AWIDTH  = 40, 
     parameter AXI_DWIDTH  = 64,
-    parameter SRAM_AWIDTH = 16 
+    // [GIẢNG BÀI] Tối ưu hóa: Thu nhỏ Address Width xuống 11-bit (16KB)
+    parameter SRAM_AWIDTH = 11 
 )(
     input  logic clk,
     input  logic rst_n,

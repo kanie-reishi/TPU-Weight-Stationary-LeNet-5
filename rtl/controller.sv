@@ -61,6 +61,7 @@ module controller_v2 #(
     localparam OP_RUN_POOL  = 4'h6;
     localparam OP_STORE_OFM = 4'h7;
     localparam OP_SYNC      = 4'h8;
+    localparam OP_LOAD_IFM  = 4'hA; // [GIẢNG BÀI] 1. Mở rộng ISA: Thêm lệnh nạp IFM từ DDR vào FPGA.
     localparam OP_FINISH    = 4'hF;
 
     // --- Định nghĩa Bank ID ---
@@ -116,7 +117,8 @@ module controller_v2 #(
                 
                 case (opcode)
                     OP_SET_ADDR, OP_SET_DIM, OP_SET_KNL: next_state = ST_FETCH; // Cập nhật tham số xong thì nạp tiếp
-                    OP_LOAD_WGT, OP_STORE_OFM:           next_state = ST_EXEC_DMA;
+                    // [GIẢNG BÀI] 2. Thêm OP_LOAD_IFM vào nhóm lệnh kích hoạt tiến trình DMA.
+                    OP_LOAD_WGT, OP_LOAD_IFM, OP_STORE_OFM: next_state = ST_EXEC_DMA;
                     OP_RUN_MAC:                          next_state = ST_WAIT_MAC;
                     OP_RUN_POOL:                         next_state = ST_WAIT_POOL;
                     OP_SYNC:                             next_state = ST_WAIT_SYNC;
@@ -126,8 +128,12 @@ module controller_v2 #(
             end
 
             ST_EXEC_DMA: begin
-                // Trạng thái này chỉ kéo dài 1 clock để phát xung dma_req_o
-                next_state = ST_FETCH;
+                // [GIẢNG BÀI] 3. Hardware Interlock: Ngăn rơi lệnh DMA.
+                // Thay vì vội vã chuyển sang ST_FETCH chỉ sau 1 clock, máy trạng thái sẽ ĐỨNG YÊN (stall) ở đây
+                // nếu dma_busy_i đang là 1. Chỉ khi DMA hoàn toàn rảnh rỗi (!dma_busy_i), 
+                // Controller mới tự động đi tiếp để lấy lệnh mới. 
+                // Software C không cần lo chèn lệnh SYNC thủ công nữa!
+                if (!dma_busy_i) next_state = ST_FETCH;
             end
 
             ST_WAIT_MAC: begin
@@ -221,23 +227,37 @@ module controller_v2 #(
                 end
 
                 ST_EXEC_DMA: begin
-                    logic [3:0] opcode;
-                    opcode = curr_inst[63:60];
+                    // [GIẢNG BÀI] Tương tự với State Machine ở trên, khối Datapath này cũng bị khóa 
+                    // bởi điều kiện (!dma_busy_i). Xung dma_req_o sẽ chỉ nảy lên 1 khi DMA thực sự rảnh.
+                    if (!dma_busy_i) begin
+                        logic [3:0] opcode;
+                        opcode = curr_inst[63:60];
 
-                    dma_req_o <= 1'b1; // Kích hoạt DMA
-                    
-                    if (opcode == OP_LOAD_WGT) begin
-                        dma_dir_o      <= 1'b0; // READ
-                        dma_addr_o     <= reg_wgt_addr;
-                        dma_bytes_o    <= curr_inst[31:0];
-                        dma_bank_sel_o <= BANK_WGT;
-                    end 
-                    else if (opcode == OP_STORE_OFM) begin
-                        dma_dir_o      <= 1'b1; // WRITE
-                        dma_addr_o     <= reg_ofm_addr;
-                        dma_bytes_o    <= curr_inst[31:0];
-                        // Ghi kết quả từ Bank hiện tại (Bank vừa được tính xong)
-                        dma_bank_sel_o <= src_bank_ptr; 
+                        dma_req_o <= 1'b1; // Kích hoạt DMA an toàn
+                        
+                        if (opcode == OP_LOAD_WGT) begin
+                            dma_dir_o      <= 1'b0; // READ
+                            dma_addr_o     <= reg_wgt_addr;
+                            dma_bytes_o    <= curr_inst[31:0];
+                            dma_bank_sel_o <= BANK_WGT;
+                        end 
+                        else if (opcode == OP_LOAD_IFM) begin
+                            // [GIẢNG BÀI] 4. Auto-Routing Ping-Pong: 
+                            // Phần mềm không cần biết là ghi vào Ping hay Pong. Phần cứng tự nội soi
+                            // xem MAC đang trỏ vào đâu (src_bank_ptr), và tự bẻ lái DMA đổ dữ liệu 
+                            // vào Bank đối diện. Cơ chế "Che giấu độ phức tạp" này giúp code C nhàn hơn rất nhiều!
+                            dma_dir_o      <= 1'b0; // READ từ DDR
+                            dma_addr_o     <= reg_ifm_addr; // Lấy địa chỉ của IFM
+                            dma_bytes_o    <= curr_inst[31:0];
+                            dma_bank_sel_o <= (src_bank_ptr == BANK_PING) ? BANK_PONG : BANK_PING;
+                        end
+                        else if (opcode == OP_STORE_OFM) begin
+                            dma_dir_o      <= 1'b1; // WRITE
+                            dma_addr_o     <= reg_ofm_addr;
+                            dma_bytes_o    <= curr_inst[31:0];
+                            // Ghi kết quả từ Bank hiện tại (Bank vừa được tính xong)
+                            dma_bank_sel_o <= src_bank_ptr; 
+                        end
                     end
                 end
 
