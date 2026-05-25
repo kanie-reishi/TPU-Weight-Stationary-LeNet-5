@@ -46,11 +46,11 @@ class PEASystolicModel:
             # 2. Arithmetic Right Shift Quantization
             val = val >> self.reg_right_shift
             
-            # 3. ReLU Activation & Saturation to INT8 (0-255)
+            # 3. ReLU Activation & Saturation to INT8 (0-127)
             if val < 0:
                 val = 0
-            elif val > 255:
-                val = 255
+            elif val > 127:
+                val = 127
             
             ofm_array[i] = np.int8(val)
             
