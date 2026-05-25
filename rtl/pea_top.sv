@@ -25,7 +25,7 @@ module pea_top #(
     // Memory Interface: Weight & Bias Bank (Read)
     output logic [ADDR_WIDTH-1:0] wb_read_addr,
     output logic                  wb_re,
-    input  logic [DATA_WIDTH-1:0] wb_read_data,
+    input  logic [15:0][7:0]      wb_read_data,
     
     // Memory Interface: IFM Buffer (Read)
     output logic [ADDR_WIDTH-1:0] ifm_read_addr,
@@ -41,16 +41,16 @@ module pea_top #(
     // =========================================================================
     // 1. Configuration Register File (Layer-specific parameters)
     // =========================================================================
-    logic [31:0] reg_ifm_width;
-    logic [31:0] reg_ifm_height;
-    logic [31:0] reg_channels_in;
-    logic [31:0] reg_channels_out;
-    logic [31:0] reg_kernel_size;
-    logic [4:0]  reg_right_shift;
+    logic [31:0] reg_ifm_width;     // Chiều rộng của ảnh đầu vào (Input Feature Map)
+    logic [31:0] reg_ifm_height;    // Chiều cao của ảnh đầu vào
+    logic [31:0] reg_channels_in;   // Số lượng kênh đầu vào (Input Channels / Depth)
+    logic [31:0] reg_channels_out;  // Số lượng kênh đầu ra (Số lượng bộ lọc / Filters)
+    logic [31:0] reg_kernel_size;   // Kích thước cạnh của bộ lọc (ví dụ: 5 cho kernel 5x5)
+    logic [4:0]  reg_right_shift;   // Số bit dịch phải (Right Shift) dùng cho quá trình Lượng tử hóa
     
-    // [Bug 9 Fix] Pre-computed strides to reduce multiplier delay in critical path
-    logic [31:0] reg_row_stride;
-    logic [31:0] reg_col_stride;
+    // Pre-computed strides to reduce multiplier delay in critical path
+    logic [31:0] reg_row_stride;    // Bước nhảy bộ nhớ cho mỗi hàng (Bytes per row = ifm_width * channels_in)
+    logic [31:0] reg_col_stride;    // Bước nhảy bộ nhớ cho mỗi cột (Bytes per pixel = channels_in)
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -123,22 +123,23 @@ module pea_top #(
                 loop_cin <= '0; loop_kx <= '0; loop_ky <= '0;
                 compute_done <= 1'b0;
                 load_counter <= '0;
-                // [Bug 8 Fix] Clear load_weight_en in IDLE
+                // Clear load_weight_en in IDLE
                 load_weight_en <= 16'd0; 
                 
             end else if (state == PRE_LOAD) begin
                 load_counter <= load_counter + 1;
-                // [Bug 8 Fix] Enable weights only during first 16 cycles of PRE_LOAD
+                // Enable weights only during first 16 cycles of PRE_LOAD
                 if (load_counter < 16) load_weight_en <= 16'hFFFF;
                 else load_weight_en <= 16'd0;
                 
-                // [Bug 4 Fix] Load bias into bias_array after weights
+                // Load bias into bias_array after weights
                 if (load_counter >= 16 && load_counter < 32) begin
-                    bias_array[load_counter - 16] <= {24'd0, wb_read_data}; // Simple zero-extend read
+                    // Read lowest 32 bits (4 bytes) of the 128-bit bus as the bias value
+                    bias_array[load_counter - 16] <= {wb_read_data[3], wb_read_data[2], wb_read_data[1], wb_read_data[0]}; 
                 end
                 
             end else if (state == COMPUTE) begin
-                // [Bug 8 Fix] Ensure weight load is off
+                // Ensure weight load is off
                 load_weight_en <= 16'd0;
                 
                 // Im2Col Nested Loop Execution
@@ -172,7 +173,15 @@ module pea_top #(
         end
     end
 
-    // [Bug 9 Fix] Im2Col Address Calculation using pre-computed strides
+    // Im2Col Address Calculation using pre-computed strides
+    // -------------------------------------------------------------------------
+    // Công thức tính địa chỉ 1D trên mảng SRAM từ tọa độ 3D (Y, X, C_in) theo chuẩn NHWC:
+    // Tọa độ pixel đang xử lý: 
+    //   - Tọa độ Y: (loop_out_y + loop_ky)
+    //   - Tọa độ X: (loop_out_x + loop_kx)
+    // Để tối ưu timing (tránh dùng 3 bộ nhân 32-bit), ta dùng row_stride và col_stride.
+    // Địa chỉ = Y * row_stride + X * col_stride + C_in
+    // -------------------------------------------------------------------------
     assign ifm_read_addr = (loop_out_y + loop_ky) * reg_row_stride + 
                            (loop_out_x + loop_kx) * reg_col_stride + loop_cin;
 
@@ -200,19 +209,17 @@ module pea_top #(
         endcase
     end
 
-    // [Bug 2 Fix] wb_read_addr mapped to load_counter
+    // wb_read_addr mapped to load_counter
     assign wb_read_addr = load_counter;
     assign wb_re = (state == PRE_LOAD);
 
-    // [Bug 1 Fix] Broadcast weight read data to weight_in_top
-    // (Note: This feeds the same 8-bit value to all columns. In a true architecture, 
-    // a wider bus or shifting logic is needed for distinct spatial filters.)
-    assign weight_in_top = {16{wb_read_data}};
+    // Connect 128-bit read data directly to the 16 columns
+    assign weight_in_top = wb_read_data;
 
     assign ifm_re = (state == COMPUTE);
     assign data_en_left = {16{ifm_re}}; // Enable all rows during compute
 
-    // [Bug 3 Fix] psum_en_top and psum_in_top assignment
+    // psum_en_top and psum_in_top assignment
     assign psum_en_top = {16{ifm_re}}; // Active during compute
     assign psum_in_top = '0;           // Bias is added at post-processing, so top is 0
 
@@ -261,7 +268,7 @@ module pea_top #(
 
     generate
         for (i = 0; i < 16; i++) begin : relu_quantize
-            // [Bug 7 Fix] Arithmetic Right Shift with Rounding
+            // Arithmetic Right Shift with Rounding
             assign shifted_val[i] = ($signed(post_psum[i]) + (32'sd1 <<< (reg_right_shift - 1))) >>> reg_right_shift;
 
             always_ff @(posedge clk or negedge rst_n) begin
@@ -275,7 +282,7 @@ module pea_top #(
                         if ($signed(shifted_val[i]) < 0) begin
                             final_ofm[i] <= 8'd0;
                         end else begin
-                            // [Bug 6 Fix] Saturation Clamp to 127 for signed INT8 max
+                            // Saturation Clamp to 127 for signed INT8 max
                             if (shifted_val[i] > 127) begin
                                 final_ofm[i] <= 8'd127; 
                             end else begin
@@ -291,7 +298,7 @@ module pea_top #(
 
     assign ofm_we = |final_valid; 
     
-    // [Bug 5 Fix] ofm_write_addr generation
+    // ofm_write_addr generation
     logic [ADDR_WIDTH-1:0] out_pixel_counter;
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
