@@ -52,22 +52,28 @@ def generate_hex():
     out_dir = '../tb/hex_conv1'
     os.makedirs(out_dir, exist_ok=True)
     
-    # Write IFM (32x32 = 1024 bytes -> 64 lines of 128-bit)
+    # Write IFM (32x32 = 1024 bytes -> 1024 lines of 128-bit)
     ifm_flat = target_img.flatten() # 1024 elements
     with open(f'{out_dir}/ifm.hex', 'w') as f:
-        for i in range(0, 1024, 16):
-            chunk = ifm_flat[i:i+16]
-            hex_str = ''.join(f'{b:02x}' for b in reversed(chunk))
+        for val in ifm_flat:
+            # Each pixel takes 1 word (16 channels padded, but since cin=1, it's just the pixel at LSB)
+            hex_str = f'{val:02x}'
+            # Pad to 128-bit (32 hex characters)
+            hex_str = hex_str.zfill(32)
             f.write(f'{hex_str}\n')
             
-    # Write Weights (16 cout * 5 * 5 = 400 bytes -> 25 lines of 128-bit)
+    # Write Weights (16 cout * 5 * 5 = 400 tiles, each tile has 16 cin words -> 400 lines of 128-bit)
     with open(f'{out_dir}/weight.hex', 'w') as f:
         for y in range(5):
             for x in range(5):
+                # Word 0: valid weights for cin=0
                 chunk = [int(w_padded[cout, 0, y, x]) for cout in range(16)]
                 chunk = [(b + 256) % 256 for b in chunk]
                 hex_str = ''.join(f'{b:02x}' for b in reversed(chunk))
                 f.write(f'{hex_str}\n')
+                # Words 1..15: padded weights for cin=1..15
+                for _ in range(15):
+                    f.write('00'*16 + '\n')
                 
     # Write Bias (16 lines of 32-bit)
     with open(f'{out_dir}/bias.hex', 'w') as f:

@@ -32,7 +32,7 @@ module sram_tdp #(
     // [GIẢNG BÀI] Khai báo mảng nhớ lõi.
     // Với AWIDTH=11, mảng này có 2048 phần tử. Mỗi phần tử rộng 64 bit.
     // Lưu ý: Không khởi tạo giá trị ban đầu (initial) để giống với RAM thực tế trên chip.
-    logic [DWIDTH-1:0] mem [0:(1<<AWIDTH)-1];
+    logic [DWIDTH-1:0] r_mem [0:(1<<AWIDTH)-1];
 
     // ==========================================
     // LOGIC ĐỌC/GHI CHO PORT A
@@ -42,9 +42,9 @@ module sram_tdp #(
     always_ff @(posedge clk) begin
         if (ena) begin
             if (wea) begin
-                mem[addra] <= dina; // Ghi dữ liệu
+                r_mem[addra] <= dina; // Ghi dữ liệu
             end
-            douta <= mem[addra]; // Đọc dữ liệu (Read-First Mode hoặc Write-First Mode)
+            douta <= r_mem[addra]; // Đọc dữ liệu (Read-First Mode hoặc Write-First Mode)
                                  // Ở đây Vivado thường suy luận ra Write-First (đọc ra dữ liệu vừa ghi).
         end
     end
@@ -57,9 +57,9 @@ module sram_tdp #(
     always_ff @(posedge clk) begin
         if (enb) begin
             if (web) begin
-                mem[addrb] <= dinb;
+                r_mem[addrb] <= dinb;
             end
-            doutb <= mem[addrb];
+            doutb <= r_mem[addrb];
         end
     end
 

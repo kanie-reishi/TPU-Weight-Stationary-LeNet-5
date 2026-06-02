@@ -99,54 +99,54 @@ module global_arbiter #(
     // KHỐI 1: INSTRUCTION FIFO (Luồng từ CPU -> Controller)
     // =========================================================
     // Logic bắt dữ liệu từ AXI-Lite đẩy vào FIFO
-    logic fifo_wr_en;
-    logic [63:0] fifo_wr_data;
+    logic w_fifo_wr_en;
+    logic [63:0] w_fifo_wr_data;
     
     // Thanh ghi tạm lưu 32-bit cao của lệnh
-    logic [31:0] shadow_reg_high;
+    logic [31:0] r_shadow_reg_high;
     
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            shadow_reg_high <= 32'd0;
+            r_shadow_reg_high <= 32'd0;
         end else begin
             // Ghi 32-bit cao vào địa chỉ 0x04
             if (s_axi_awvalid && s_axi_wvalid && s_axi_awaddr == 32'h0000_0004) begin
-                shadow_reg_high <= s_axi_wdata;
+                r_shadow_reg_high <= s_axi_wdata;
             end
         end
     end
     
     // Khi CPU ghi 32-bit thấp vào địa chỉ 0x00 (Thanh ghi nạp lệnh)
-    assign fifo_wr_en   = (s_axi_awvalid && s_axi_wvalid && s_axi_awaddr == 32'h0000_0000);
+    assign w_fifo_wr_en   = (s_axi_awvalid && s_axi_wvalid && s_axi_awaddr == 32'h0000_0000);
     
     // Ghép 32-bit cao từ shadow_reg và 32-bit thấp từ wdata
-    assign fifo_wr_data = {shadow_reg_high, s_axi_wdata};
+    assign w_fifo_wr_data = {r_shadow_reg_high, s_axi_wdata};
 
     // Khởi tạo IP Instruction FIFO (First-In-First-Out)
-    logic fifo_full;
+    logic w_fifo_full;
     instruction_fifo u_inst_fifo (
         .clk        (clk),
         .rst_n      (rst_n),
-        .wr_en      (fifo_wr_en),
-        .wr_data    (fifo_wr_data),
-        .full       (fifo_full),
+        .wr_en      (w_fifo_wr_en),
+        .wr_data    (w_fifo_wr_data),
+        .full       (w_fifo_full),
         .rd_en      (ctrl_inst_read_i),    // Controller xin đọc lệnh
         .rd_data    (ctrl_inst_data_o),    // Trả lệnh về Controller
         .empty      (ctrl_inst_empty_o)    // Báo Controller biết hết lệnh chưa
     );
 
     // Hardware Backpressure: Chặn AXI-Lite nếu FIFO đã đầy
-    assign s_axi_awready = ~fifo_full;
-    assign s_axi_wready  = ~fifo_full;
+    assign s_axi_awready = ~w_fifo_full;
+    assign s_axi_wready  = ~w_fifo_full;
 
     // =========================================================
     // KHỐI 2: DMA ENGINE (Luồng kéo/đẩy DDR)
     // =========================================================
-    logic                   dma_internal_we;
-    logic [SRAM_AWIDTH-1:0] dma_internal_addr;
-    logic [SRAM_DWIDTH-1:0] dma_internal_wdata;
-    logic [SRAM_DWIDTH-1:0] dma_internal_rdata;
-    logic [1:0]             dma_internal_bank_sel;
+    logic                   w_dma_internal_we;
+    logic [SRAM_AWIDTH-1:0] w_dma_internal_addr;
+    logic [SRAM_DWIDTH-1:0] w_dma_internal_wdata;
+    logic [SRAM_DWIDTH-1:0] r_dma_internal_rdata;
+    logic [1:0]             w_dma_internal_bank_sel;
 
     // Tái sử dụng module DMA FSM chúng ta đã viết ở bước trước
     axi_full_dma_engine #(
@@ -191,11 +191,11 @@ module global_arbiter #(
         .m_axi_bready   (m_axi_bready),
         
         // Cổng Memory chung (Sẽ được Demux ở dưới)
-        .sram_we_o      (dma_internal_we),
-        .sram_bank_o    (dma_internal_bank_sel),
-        .sram_addr_o    (dma_internal_addr),
-        .sram_wdata_o   (dma_internal_wdata),
-        .sram_rdata_i   (dma_internal_rdata)
+        .sram_we_o      (w_dma_internal_we),
+        .sram_bank_o    (w_dma_internal_bank_sel),
+        .sram_addr_o    (w_dma_internal_addr),
+        .sram_wdata_o   (w_dma_internal_wdata),
+        .sram_rdata_i   (r_dma_internal_rdata)
     );
 
     // =========================================================
@@ -211,8 +211,8 @@ module global_arbiter #(
         pong_we_o = 1'b0;
 
         // Bẻ lái theo cấu hình từ Controller
-        if (dma_internal_we) begin
-            case (dma_internal_bank_sel)
+        if (w_dma_internal_we) begin
+            case (w_dma_internal_bank_sel)
                 2'b00: wgt_we_o  = 1'b1;  // Đẩy vào Weight Bank
                 2'b01: ping_we_o = 1'b1;  // Đẩy vào Ping Bank
                 2'b10: pong_we_o = 1'b1;  // Đẩy vào Pong Bank
@@ -222,22 +222,22 @@ module global_arbiter #(
 
     // Dây Address và Data Write được nối song song tới tất cả các Bank.
     // Bank nào có tín hiệu WE (ở trên) bật lên thì bank đó mới nhận dữ liệu.
-    assign wgt_addr_o   = dma_internal_addr;
-    assign ping_addr_o  = dma_internal_addr;
-    assign pong_addr_o  = dma_internal_addr;
+    assign wgt_addr_o   = w_dma_internal_addr;
+    assign ping_addr_o  = w_dma_internal_addr;
+    assign pong_addr_o  = w_dma_internal_addr;
 
-    assign wgt_wdata_o  = dma_internal_wdata;
-    assign ping_wdata_o = dma_internal_wdata;
-    assign pong_wdata_o = dma_internal_wdata;
+    assign wgt_wdata_o  = w_dma_internal_wdata;
+    assign ping_wdata_o = w_dma_internal_wdata;
+    assign pong_wdata_o = w_dma_internal_wdata;
 
     // 3.2. Luồng Đọc (Multiplexer: Từ Ping/Pong Bank ra DMA để STORE_OFM)
     // Khi STORE_OFM, DMA Engine cần dữ liệu từ Ping hoặc Pong. Ta dùng Mux để chọn.
     
     always_comb begin
-        case (dma_internal_bank_sel)
-            2'b01: dma_internal_rdata = ping_rdata_i; // Đọc từ Ping Bank ra DDR
-            2'b10: dma_internal_rdata = pong_rdata_i; // Đọc từ Pong Bank ra DDR
-            default: dma_internal_rdata = '0;
+        case (w_dma_internal_bank_sel)
+            2'b01: r_dma_internal_rdata = ping_rdata_i; // Đọc từ Ping Bank ra DDR
+            2'b10: r_dma_internal_rdata = pong_rdata_i; // Đọc từ Pong Bank ra DDR
+            default: r_dma_internal_rdata = '0;
         endcase
     end
 

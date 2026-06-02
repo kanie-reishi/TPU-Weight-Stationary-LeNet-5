@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module controller_v2 #(
+module controller #(
     parameter AXI_AWIDTH = 40,
     parameter AXI_DWIDTH = 64
 )(
@@ -81,50 +81,50 @@ module controller_v2 #(
         ST_HALT
     } state_t;
 
-    state_t state, next_state;
+    state_t r_state, r_next_state;
 
     // --- Thanh ghi lưu trữ cấu hình (Configuration Registers) ---
-    logic [AXI_AWIDTH-1:0] reg_ifm_addr, reg_wgt_addr, reg_ofm_addr;
-    logic [63:0]           curr_inst;       // Thanh ghi chứa lệnh hiện tại
-    logic [1:0]            src_bank_ptr;    // Con trỏ Ping-Pong
+    logic [AXI_AWIDTH-1:0] r_reg_ifm_addr, r_reg_wgt_addr, r_reg_ofm_addr;
+    logic [63:0]           r_curr_inst;       // Thanh ghi chứa lệnh hiện tại
+    logic [1:0]            r_src_bank_ptr;    // Con trỏ Ping-Pong
 
     // Gán đầu ra thông số cho PE Array liên tục
-    assign src_bank_o = src_bank_ptr;
-    assign dst_bank_o = (src_bank_ptr == BANK_PING) ? BANK_PONG : BANK_PING; // Đích luôn ngược với Nguồn
+    assign src_bank_o = r_src_bank_ptr;
+    assign dst_bank_o = (r_src_bank_ptr == BANK_PING) ? BANK_PONG : BANK_PING; // Đích luôn ngược với Nguồn
 
     // =========================================================
     // FSM LOGIC
     // =========================================================
     always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) state <= ST_FETCH;
-        else        state <= next_state;
+        if (!rst_n) r_state <= ST_FETCH;
+        else        r_state <= r_next_state;
     end
 
     always_comb begin
-        next_state  = state;
+        r_next_state  = r_state;
         inst_read_o = 1'b0;
 
-        case (state)
+        case (r_state)
             ST_FETCH: begin
                 if (!inst_empty_i) begin
                     inst_read_o = 1'b1;  // Pop lệnh khỏi FIFO
-                    next_state  = ST_DECODE;
+                    r_next_state  = ST_DECODE;
                 end
             end
 
             ST_DECODE: begin
-                logic [3:0] opcode;
-                opcode = curr_inst[63:60]; // Lấy 4 bit Opcode
+                logic [3:0] r_opcode;
+                r_opcode = r_curr_inst[63:60]; // Lấy 4 bit Opcode
                 
-                case (opcode)
-                    OP_SET_ADDR, OP_SET_DIM, OP_SET_KNL: next_state = ST_FETCH; // Cập nhật tham số xong thì nạp tiếp
+                case (r_opcode)
+                    OP_SET_ADDR, OP_SET_DIM, OP_SET_KNL: r_next_state = ST_FETCH; // Cập nhật tham số xong thì nạp tiếp
                     // [GIẢNG BÀI] 2. Thêm OP_LOAD_IFM vào nhóm lệnh kích hoạt tiến trình DMA.
-                    OP_LOAD_WGT, OP_LOAD_IFM, OP_STORE_OFM: next_state = ST_EXEC_DMA;
-                    OP_RUN_MAC:                          next_state = ST_WAIT_MAC;
-                    OP_RUN_POOL:                         next_state = ST_WAIT_POOL;
-                    OP_SYNC:                             next_state = ST_WAIT_SYNC;
-                    OP_FINISH:                           next_state = ST_HALT;
-                    default:                             next_state = ST_FETCH;
+                    OP_LOAD_WGT, OP_LOAD_IFM, OP_STORE_OFM: r_next_state = ST_EXEC_DMA;
+                    OP_RUN_MAC:                          r_next_state = ST_WAIT_MAC;
+                    OP_RUN_POOL:                         r_next_state = ST_WAIT_POOL;
+                    OP_SYNC:                             r_next_state = ST_WAIT_SYNC;
+                    OP_FINISH:                           r_next_state = ST_HALT;
+                    default:                             r_next_state = ST_FETCH;
                 endcase
             end
 
@@ -133,33 +133,33 @@ module controller_v2 #(
                 // Chờ cho đến khi DMA hoàn toàn rảnh rỗi (!dma_busy_i) để xuất lệnh DMA mới.
                 // Khi DMA đã sẵn sàng, nhảy sang ST_WAIT_DMA_ACK để chờ DMA bắt đầu.
                 // Software C không cần lo chèn lệnh SYNC thủ công nữa!
-                if (!dma_busy_i) next_state = ST_WAIT_DMA_ACK;
+                if (!dma_busy_i) r_next_state = ST_WAIT_DMA_ACK;
             end
 
             ST_WAIT_DMA_ACK: begin
                 // Đợi cho đến khi DMA chính thức chạy (dma_busy_i bật lên 1).
                 // Sau đó nhảy sang ST_WAIT_SYNC để chặn pipeline cho đến khi DMA hoàn thành.
-                if (dma_busy_i) next_state = ST_WAIT_SYNC;
+                if (dma_busy_i) r_next_state = ST_WAIT_SYNC;
             end
 
             ST_WAIT_MAC: begin
                 // Auto-stall: Đứng đợi cho đến khi PE Array tính xong layer
-                if (mac_done_i) next_state = ST_FETCH;
+                if (mac_done_i) r_next_state = ST_FETCH;
             end
 
             ST_WAIT_POOL: begin
                 // Auto-stall: Đứng đợi Pool tính xong
-                if (pool_done_i) next_state = ST_FETCH;
+                if (pool_done_i) r_next_state = ST_FETCH;
             end
 
             ST_WAIT_SYNC: begin
                 // Block pipeline cho đến khi Arbiter báo DMA đã rảnh
-                if (!dma_busy_i) next_state = ST_FETCH;
+                if (!dma_busy_i) r_next_state = ST_FETCH;
             end
 
             ST_HALT: begin
                 // Giữ nguyên trạng thái Halt cho đến khi Reset chip
-                next_state = ST_HALT;
+                r_next_state = ST_HALT;
             end
         endcase
     end
@@ -169,8 +169,8 @@ module controller_v2 #(
     // =========================================================
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            curr_inst    <= '0;
-            src_bank_ptr <= BANK_PING; // Mặc định dữ liệu ảnh gốc nằm ở PING
+            r_curr_inst    <= '0;
+            r_src_bank_ptr <= BANK_PING; // Mặc định dữ liệu ảnh gốc nằm ở PING
             
             // Reset các cờ điều khiển
             dma_req_o    <= 1'b0;
@@ -183,46 +183,46 @@ module controller_v2 #(
             mac_start_o  <= 1'b0;
             pool_start_o <= 1'b0;
 
-            case (state)
+            case (r_state)
                 ST_FETCH: begin
-                    if (!inst_empty_i) curr_inst <= inst_data_i; // Lưu lệnh vào thanh ghi
+                    if (!inst_empty_i) r_curr_inst <= inst_data_i; // Lưu lệnh vào thanh ghi
                 end
 
                 ST_DECODE: begin
-                    logic [3:0] opcode;
-                    opcode = curr_inst[63:60];
+                    logic [3:0] r_opcode;
+                    r_opcode = r_curr_inst[63:60];
 
                     // Tách Payload
-                    case (opcode)
+                    case (r_opcode)
                         OP_SET_ADDR: begin
-                            logic [1:0] addr_type;
-                            addr_type = curr_inst[59:58];
-                            if      (addr_type == 2'b00) reg_ifm_addr <= curr_inst[39:0];
-                            else if (addr_type == 2'b01) reg_wgt_addr <= curr_inst[39:0];
-                            else if (addr_type == 2'b10) reg_ofm_addr <= curr_inst[39:0];
+                            logic [1:0] r_addr_type;
+                            r_addr_type = r_curr_inst[59:58];
+                            if      (r_addr_type == 2'b00) r_reg_ifm_addr <= r_curr_inst[39:0];
+                            else if (r_addr_type == 2'b01) r_reg_wgt_addr <= r_curr_inst[39:0];
+                            else if (r_addr_type == 2'b10) r_reg_ofm_addr <= r_curr_inst[39:0];
                         end
 
                         OP_SET_DIM: begin
-                            ifm_w_o <= curr_inst[47:32];
-                            ifm_h_o <= curr_inst[31:16];
-                            ifm_c_o <= curr_inst[15:0];
+                            ifm_w_o <= r_curr_inst[47:32];
+                            ifm_h_o <= r_curr_inst[31:16];
+                            ifm_c_o <= r_curr_inst[15:0];
                         end
 
                         OP_SET_KNL: begin
-                            ofm_c_o     <= curr_inst[31:16];
-                            knl_size_o  <= curr_inst[15:8];
-                            stride_o    <= curr_inst[7:4];
-                            shift_amt_o <= curr_inst[3:0];
+                            ofm_c_o     <= r_curr_inst[31:16];
+                            knl_size_o  <= r_curr_inst[15:8];
+                            stride_o    <= r_curr_inst[7:4];
+                            shift_amt_o <= r_curr_inst[3:0];
                         end
 
                         OP_RUN_MAC: begin
-                            relu_en_o   <= curr_inst[0];
+                            relu_en_o   <= r_curr_inst[0];
                             mac_start_o <= 1'b1; // Phát xung kích hoạt mảng PE
                         end
 
                         OP_RUN_POOL: begin
-                            pool_type_o  <= curr_inst[9:8];
-                            knl_size_o   <= curr_inst[7:0]; // Tái sử dụng dây knl_size_o
+                            pool_type_o  <= r_curr_inst[9:8];
+                            knl_size_o   <= r_curr_inst[7:0]; // Tái sử dụng dây knl_size_o
                             pool_start_o <= 1'b1;
                         end
 
@@ -236,43 +236,43 @@ module controller_v2 #(
                     // [GIẢNG BÀI] Tương tự với State Machine ở trên, khối Datapath này cũng bị khóa 
                     // bởi điều kiện (!dma_busy_i). Xung dma_req_o sẽ chỉ nảy lên 1 khi DMA thực sự rảnh.
                     if (!dma_busy_i) begin
-                        logic [3:0] opcode;
-                        opcode = curr_inst[63:60];
+                        logic [3:0] r_opcode;
+                        r_opcode = r_curr_inst[63:60];
 
                         dma_req_o <= 1'b1; // Kích hoạt DMA an toàn
                         
-                        if (opcode == OP_LOAD_WGT) begin
+                        if (r_opcode == OP_LOAD_WGT) begin
                             dma_dir_o      <= 1'b0; // READ
-                            dma_addr_o     <= reg_wgt_addr;
-                            dma_bytes_o    <= curr_inst[31:0];
+                            dma_addr_o     <= r_reg_wgt_addr;
+                            dma_bytes_o    <= r_curr_inst[31:0];
                             dma_bank_sel_o <= BANK_WGT;
                         end 
-                        else if (opcode == OP_LOAD_IFM) begin
+                        else if (r_opcode == OP_LOAD_IFM) begin
                             // Sửa lỗi: Cần load IFM vào ĐÚNG bank hiện tại (src_bank_ptr) để lệnh RUN_MAC ngay sau đó đọc được.
                             // Không được load vào bank đối diện vì RUN_MAC đọc từ src_bank_ptr.
                             dma_dir_o      <= 1'b0; // READ từ DDR
-                            dma_addr_o     <= reg_ifm_addr; // Lấy địa chỉ của IFM
-                            dma_bytes_o    <= curr_inst[31:0];
-                            dma_bank_sel_o <= src_bank_ptr;
+                            dma_addr_o     <= r_reg_ifm_addr; // Lấy địa chỉ của IFM
+                            dma_bytes_o    <= r_curr_inst[31:0];
+                            dma_bank_sel_o <= r_src_bank_ptr;
                         end
-                        else if (opcode == OP_STORE_OFM) begin
+                        else if (r_opcode == OP_STORE_OFM) begin
                             dma_dir_o      <= 1'b1; // WRITE
-                            dma_addr_o     <= reg_ofm_addr;
-                            dma_bytes_o    <= curr_inst[31:0];
+                            dma_addr_o     <= r_reg_ofm_addr;
+                            dma_bytes_o    <= r_curr_inst[31:0];
                             // Ghi kết quả từ Bank hiện tại (Bank vừa được tính xong)
-                            dma_bank_sel_o <= src_bank_ptr; 
+                            dma_bank_sel_o <= r_src_bank_ptr; 
                         end
                     end
                 end
 
                 ST_WAIT_MAC: begin
                     // Đảo chiều Ping-Pong sau khi hoàn thành Conv
-                    if (mac_done_i) src_bank_ptr <= (src_bank_ptr == BANK_PING) ? BANK_PONG : BANK_PING;
+                    if (mac_done_i) r_src_bank_ptr <= (r_src_bank_ptr == BANK_PING) ? BANK_PONG : BANK_PING;
                 end
 
                 ST_WAIT_POOL: begin
                     // Đảo chiều Ping-Pong sau khi hoàn thành Pool
-                    if (pool_done_i) src_bank_ptr <= (src_bank_ptr == BANK_PING) ? BANK_PONG : BANK_PING;
+                    if (pool_done_i) r_src_bank_ptr <= (r_src_bank_ptr == BANK_PING) ? BANK_PONG : BANK_PING;
                 end
             endcase
         end

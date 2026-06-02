@@ -6,46 +6,30 @@
 //              Automatically handles modulo row mapping.
 // ============================================================================
 module line_buffer #(
-    parameter MAX_WIDTH = 32,
-    parameter MAX_ROWS = 5,
-    parameter DATA_WIDTH = 128
+    parameter IMG_WIDTH = 32,
+    parameter KERNEL_SIZE = 5,
+    parameter DATA_WIDTH = 8
 )(
     input  logic clk,
     
-    // Write Interface (From IFM SRAM)
-    input  logic                  we,
-    input  logic [31:0]           write_row,
-    input  logic [31:0]           write_col,
-    input  logic [DATA_WIDTH-1:0] write_data,
+    input  logic rst_n,
+    // Write Interface (From IFM Serializer)
+    input  logic pixel_valid_in,
+    input  logic [DATA_WIDTH-1:0] pixel_in,
+    input  logic new_image,
     
     // Read Interface (To PE Array)
-    input  logic [31:0]           read_row,
-    input  logic [31:0]           read_col,
-    output logic [DATA_WIDTH-1:0] read_data
+    output logic window_valid_out,
+    output logic [KERNEL_SIZE-1:0][KERNEL_SIZE-1:0][DATA_WIDTH-1:0] window_data_out
 );
 
-    // Modulo mapping to physical rows
-    logic [2:0] w_phys_row;
-    logic [2:0] r_phys_row;
+    localparam LB_DEPTH = IMG_WIDTH;
+
+    logic [DATA_WIDTH-1:0] r_lb_1[LB_DEPTH-1:0];
+    logic [DATA_WIDTH-1:0] r_lb_2[LB_DEPTH-1:0];
+    logic [DATA_WIDTH-1:0] r_lb_3[LB_DEPTH-1:0];
+    logic [DATA_WIDTH-1:0] r_lb_4[LB_DEPTH-1:0];
     
-    assign w_phys_row = write_row % MAX_ROWS;
-    assign r_phys_row = read_row % MAX_ROWS;
     
-    // Linear address calculation
-    logic [7:0] w_addr;
-    logic [7:0] r_addr;
-    
-    assign w_addr = w_phys_row * MAX_WIDTH + write_col;
-    assign r_addr = r_phys_row * MAX_WIDTH + read_col;
-    
-    // Block RAM inference
-    logic [DATA_WIDTH-1:0] mem [0:MAX_ROWS*MAX_WIDTH-1];
-    
-    always_ff @(posedge clk) begin
-        if (we) begin
-            mem[w_addr] <= write_data;
-        end
-        read_data <= mem[r_addr];
-    end
 
 endmodule

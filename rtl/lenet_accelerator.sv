@@ -19,9 +19,14 @@ module lenet_accelerator #(
     output logic                    s_axi_wready,
     input  logic [31:0]             s_axi_wdata,
     
-    // Các tín hiệu Read (Giản lược cho ví dụ)
-    // input  logic s_axi_arvalid,
-    // output logic s_axi_arready, ...
+    // Read channel
+    input  logic                   s_axi_arvalid,
+    output logic                   s_axi_arready,
+    input  logic [31:0]            s_axi_araddr,
+    output logic                   s_axi_rvalid,
+    input  logic                   s_axi_rready,
+    output logic [31:0]            s_axi_rdata,
+    output logic [1:0]             s_axi_rresp,
     
     input  logic                    s_axi_bready,
     output logic                    s_axi_bvalid,
@@ -68,63 +73,63 @@ module lenet_accelerator #(
     // TÍN HIỆU KẾT NỐI NỘI BỘ
     // =========================================================
     // Instruction FIFO
-    logic [63:0] inst_data;
-    logic        inst_empty;
-    logic        inst_read;
+    logic [63:0] w_inst_data;
+    logic        w_inst_empty;
+    logic        w_inst_read;
 
     // DMA Control
-    logic                  dma_req;
-    logic                  dma_dir;
-    logic [AXI_AWIDTH-1:0] dma_addr;
-    logic [31:0]           dma_bytes;
-    logic [1:0]            dma_bank_sel;
-    logic                  dma_busy;
+    logic                  w_dma_req;
+    logic                  w_dma_dir;
+    logic [AXI_AWIDTH-1:0] w_dma_addr;
+    logic [31:0]           w_dma_bytes;
+    logic [1:0]            w_dma_bank_sel;
+    logic                  w_dma_busy;
 
     // PEA Control & Parameters
-    logic        mac_start;
-    logic        mac_done;
-    logic        pool_start;
-    logic        pool_done;
+    logic        ctrl_mac_start;
+    logic        ctrl_mac_done;
+    logic        ctrl_pool_start;
+    logic        ctrl_pool_done;
     
-    logic [1:0]  src_bank;
-    logic [1:0]  dst_bank;
+    logic [1:0]  w_src_bank;
+    logic [1:0]  w_dst_bank;
 
     // PEA <-> SRAM Interfaces
-    logic [SRAM_AWIDTH-1:0] pea_ifm_addr, pea_ofm_addr, pea_wgt_addr;
-    logic                   pea_ifm_re, pea_ofm_we, pea_wgt_re;
-    logic [SRAM_DWIDTH-1:0] pea_ifm_rdata, pea_ofm_wdata, pea_wgt_rdata;
+    logic [SRAM_AWIDTH-1:0] w_pea_ifm_addr, w_pea_ofm_addr, w_pea_wgt_addr;
+    logic                   w_pea_ifm_re, w_pea_ofm_we, w_pea_wgt_re;
+    logic [SRAM_DWIDTH-1:0] w_pea_ifm_rdata, w_pea_ofm_wdata, w_pea_wgt_rdata;
 
     // SRAM Port A (DMA Access)
-    logic                   wgt_we_a, ping_we_a, pong_we_a;
-    logic [SRAM_AWIDTH-1:0] wgt_addr_a, ping_addr_a, pong_addr_a;
-    logic [SRAM_DWIDTH-1:0] wgt_wdata_a, ping_wdata_a, pong_wdata_a;
-    logic [SRAM_DWIDTH-1:0] wgt_rdata_a, ping_rdata_a, pong_rdata_a;
+    logic                   w_wgt_we_a, w_ping_we_a, w_pong_we_a;
+    logic [SRAM_AWIDTH-1:0] w_wgt_addr_a, w_ping_addr_a, w_pong_addr_a;
+    logic [SRAM_DWIDTH-1:0] w_wgt_wdata_a, w_ping_wdata_a, w_pong_wdata_a;
+    logic [SRAM_DWIDTH-1:0] w_wgt_rdata_a, w_ping_rdata_a, w_pong_rdata_a;
 
     // SRAM Port B (PEA Access)
-    logic                   wgt_en_b, ping_en_b, pong_en_b;
-    logic                   wgt_we_b, ping_we_b, pong_we_b;
-    logic [SRAM_AWIDTH-1:0] wgt_addr_b, ping_addr_b, pong_addr_b;
-    logic [SRAM_DWIDTH-1:0] wgt_wdata_b, ping_wdata_b, pong_wdata_b;
-    logic [SRAM_DWIDTH-1:0] wgt_rdata_b, ping_rdata_b, pong_rdata_b;
+    logic                   w_wgt_en_b, w_ping_en_b, w_pong_en_b;
+    logic                   w_wgt_we_b, w_ping_we_b, w_pong_we_b;
+    logic [SRAM_AWIDTH-1:0] w_wgt_addr_b, w_ping_addr_b, w_pong_addr_b;
+    logic [SRAM_DWIDTH-1:0] w_wgt_wdata_b, w_ping_wdata_b, w_pong_wdata_b;
+    logic [SRAM_DWIDTH-1:0] w_wgt_rdata_b, w_ping_rdata_b, w_pong_rdata_b;
 
     // Arbiter Outputs
-    logic                   ifm_ping_en, ifm_pong_en;
-    logic [SRAM_AWIDTH-1:0] ifm_ping_addr, ifm_pong_addr;
+    logic                   w_ifm_ping_en, w_ifm_pong_en;
+    logic [SRAM_AWIDTH-1:0] w_ifm_ping_addr, w_ifm_pong_addr;
     
-    logic                   ofm_ping_en, ofm_ping_we;
-    logic [SRAM_AWIDTH-1:0] ofm_ping_addr;
-    logic [SRAM_DWIDTH-1:0] ofm_ping_wdata;
+    logic                   w_ofm_ping_en, w_ofm_ping_we;
+    logic [SRAM_AWIDTH-1:0] w_ofm_ping_addr;
+    logic [SRAM_DWIDTH-1:0] w_ofm_ping_wdata;
 
-    logic                   ofm_pong_en, ofm_pong_we;
-    logic [SRAM_AWIDTH-1:0] ofm_pong_addr;
-    logic [SRAM_DWIDTH-1:0] ofm_pong_wdata;
+    logic                   w_ofm_pong_en, w_ofm_pong_we;
+    logic [SRAM_AWIDTH-1:0] w_ofm_pong_addr;
+    logic [SRAM_DWIDTH-1:0] w_ofm_pong_wdata;
 
     // PEA Config
-    logic [15:0] ifm_w, ifm_h, ifm_c, ofm_c;
-    logic [7:0]  knl_size;
-    logic [3:0]  stride, shift_amt;
-    logic        relu_en;
-    logic [1:0]  pool_type;
+    logic [15:0] w_ifm_w, w_ifm_h, w_ifm_c, w_ofm_c;
+    logic [7:0]  w_knl_size;
+    logic [3:0]  w_stride, w_shift_amt;
+    logic        w_relu_en;
+    logic [1:0]  w_pool_type;
 
     // =========================================================
     // 1. GLOBAL ARBITER (AXI, DMA)
@@ -154,126 +159,165 @@ module lenet_accelerator #(
         .m_axi_bresp(m_axi_bresp),     .m_axi_bvalid(m_axi_bvalid),
         .m_axi_bready(m_axi_bready),
         // Instruction FIFO
-        .ctrl_inst_data_o(inst_data), .ctrl_inst_empty_o(inst_empty), .ctrl_inst_read_i(inst_read),
+        .ctrl_inst_data_o(w_inst_data), .ctrl_inst_empty_o(w_inst_empty), .ctrl_inst_read_i(w_inst_read),
         // DMA Control
-        .ctrl_dma_req_i(dma_req), .ctrl_dma_dir_i(dma_dir), .ctrl_dma_addr_i(dma_addr),
-        .ctrl_dma_bytes_i(dma_bytes), .ctrl_dma_bank_sel_i(dma_bank_sel), .ctrl_dma_busy_o(dma_busy),
+        .ctrl_dma_req_i(w_dma_req), .ctrl_dma_dir_i(w_dma_dir), .ctrl_dma_addr_i(w_dma_addr),
+        .ctrl_dma_bytes_i(w_dma_bytes), .ctrl_dma_bank_sel_i(w_dma_bank_sel), .ctrl_dma_busy_o(w_dma_busy),
         // SRAM Port A
-        .wgt_we_o(wgt_we_a),   .wgt_addr_o(wgt_addr_a),   .wgt_wdata_o(wgt_wdata_a),
-        .ping_we_o(ping_we_a), .ping_addr_o(ping_addr_a), .ping_wdata_o(ping_wdata_a), .ping_rdata_i(ping_rdata_a),
-        .pong_we_o(pong_we_a), .pong_addr_o(pong_addr_a), .pong_wdata_o(pong_wdata_a), .pong_rdata_i(pong_rdata_a)
+        .wgt_we_o(w_wgt_we_a),   .wgt_addr_o(w_wgt_addr_a),   .wgt_wdata_o(w_wgt_wdata_a),
+        .ping_we_o(w_ping_we_a), .ping_addr_o(w_ping_addr_a), .ping_wdata_o(w_ping_wdata_a), .ping_rdata_i(w_ping_rdata_a),
+        .pong_we_o(w_pong_we_a), .pong_addr_o(w_pong_addr_a), .pong_wdata_o(w_pong_wdata_a), .pong_rdata_i(w_pong_rdata_a)
     );
 
-    // Simple AXI-Lite Write Response (B channel)
+    // =========================================================
+    // LOGIC ĐIỀU KHIỂN AXI-LITE READ
+    // =========================================================
+    logic axi_arready_reg, axi_rvalid_reg;
+    logic [31:0] axi_araddr_reg;
+    logic [31:0] axi_rdata_reg;
+
+    assign s_axi_arready = axi_arready_reg;
+    assign s_axi_rvalid  = axi_rvalid_reg;
+    assign s_axi_rdata   = axi_rdata_reg;
+    assign s_axi_rresp   = 2'b00; // Luôn trả lời OKAY
+
+    // 1. Chốt địa chỉ đọc (AR Channel)
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            s_axi_bvalid <= 1'b0;
+            axi_arready_reg <= 1'b0;
+            axi_araddr_reg  <= 32'd0;
         end else begin
-            // When both address and data are accepted, assert bvalid
-            if (s_axi_awvalid && s_axi_wvalid && s_axi_awready && s_axi_wready && !s_axi_bvalid) begin
-                s_axi_bvalid <= 1'b1;
-            end else if (s_axi_bready && s_axi_bvalid) begin
-                // Deassert bvalid when master is ready
-                s_axi_bvalid <= 1'b0;
+            if (~axi_arready_reg && s_axi_arvalid) begin
+                axi_arready_reg <= 1'b1;
+                axi_araddr_reg  <= s_axi_araddr;
+            end else begin
+                axi_arready_reg <= 1'b0;
             end
         end
     end
-    assign s_axi_bresp  = 2'b00; // OKAY response
+
+    // 2. Xung kích hoạt Read
+    logic slv_reg_rden;
+    assign slv_reg_rden = axi_arready_reg && s_axi_arvalid && ~axi_rvalid_reg;
+
+    // 3. Gửi dữ liệu đọc về CPU (R Channel)
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            axi_rvalid_reg <= 1'b0;
+            axi_rdata_reg  <= 32'd0;
+        end else begin
+            if (slv_reg_rden) begin
+                axi_rvalid_reg <= 1'b1;
+                
+                // MUX BỘ NHỚ LƯU TRẠNG THÁI (STATUS REGISTERS)
+                case (axi_araddr_reg[7:0])
+                    8'h00: axi_rdata_reg <= {31'd0, ctrl_mac_done}; // CPU đọc 0x00 để biết tính xong chưa
+                    8'h04: axi_rdata_reg <= {31'd0, finish_irq_o};  // Đọc cờ ngắt
+                    // Bạn có thể map thêm các thanh ghi gỡ lỗi (debug) ở đây
+                    default: axi_rdata_reg <= 32'hDEADBEEF; // Báo hiệu đọc sai địa chỉ
+                endcase
+            end else if (axi_rvalid_reg && s_axi_rready) begin
+                // CPU đã nhận được dữ liệu, tắt cờ valid
+                axi_rvalid_reg <= 1'b0;
+            end
+        end
+    end
 
     // =========================================================
     // 2. CONTROLLER
     // =========================================================
-    controller_v2 #(
+    controller #(
         .AXI_AWIDTH(AXI_AWIDTH),
         .AXI_DWIDTH(AXI_DWIDTH)
     ) u_ctrl (
         .clk(clk), .rst_n(rst_n),
-        .inst_data_i(inst_data), .inst_empty_i(inst_empty), .inst_read_o(inst_read),
-        .dma_req_o(dma_req), .dma_dir_o(dma_dir), .dma_addr_o(dma_addr),
-        .dma_bytes_o(dma_bytes), .dma_bank_sel_o(dma_bank_sel), .dma_busy_i(dma_busy),
-        .mac_start_o(mac_start), .mac_done_i(mac_done),
-        .pool_start_o(pool_start), .pool_done_i(pool_done),
-        .src_bank_o(src_bank), .dst_bank_o(dst_bank),
-        .ifm_w_o(ifm_w), .ifm_h_o(ifm_h), .ifm_c_o(ifm_c), .ofm_c_o(ofm_c),
-        .knl_size_o(knl_size), .stride_o(stride), .shift_amt_o(shift_amt),
-        .relu_en_o(relu_en), .pool_type_o(pool_type),
+        .inst_data_i(w_inst_data), .inst_empty_i(w_inst_empty), .inst_read_o(w_inst_read),
+        .dma_req_o(w_dma_req), .dma_dir_o(w_dma_dir), .dma_addr_o(w_dma_addr),
+        .dma_bytes_o(w_dma_bytes), .dma_bank_sel_o(w_dma_bank_sel), .dma_busy_i(w_dma_busy),
+        .mac_start_o(ctrl_mac_start), .mac_done_i(ctrl_mac_done),
+        .pool_start_o(ctrl_pool_start), .pool_done_i(ctrl_pool_done),
+        .src_bank_o(w_src_bank), .dst_bank_o(w_dst_bank),
+        .ifm_w_o(w_ifm_w), .ifm_h_o(w_ifm_h), .ifm_c_o(w_ifm_c), .ofm_c_o(w_ofm_c),
+        .knl_size_o(w_knl_size), .stride_o(w_stride), .shift_amt_o(w_shift_amt),
+        .relu_en_o(w_relu_en), .pool_type_o(w_pool_type),
         .finish_irq_o(finish_irq_o)
     );
 
     // =========================================================
     // 3. IFM / OFM ARBITERS
     // =========================================================
-    logic bank_sel_bit;
-    assign bank_sel_bit = (src_bank == 2'b10) ? 1'b1 : 1'b0; // 0=Ping, 1=Pong
+    logic w_bank_sel_bit;
+    assign w_bank_sel_bit = (w_src_bank == 2'b10) ? 1'b1 : 1'b0; // 0=Ping, 1=Pong
 
     ifm_arbiter #(
         .ADDR_WIDTH(SRAM_AWIDTH),
         .DATA_WIDTH(SRAM_DWIDTH)
     ) u_ifm_arbiter (
-        .bank_sel(bank_sel_bit),
-        .pea_ifm_addr(pea_ifm_addr[SRAM_AWIDTH-1:0]), .pea_ifm_re(pea_ifm_re), .pea_ifm_rdata(pea_ifm_rdata),
-        .ping_en(ifm_ping_en), .ping_addr(ifm_ping_addr), .ping_rdata(ping_rdata_b),
-        .pong_en(ifm_pong_en), .pong_addr(ifm_pong_addr), .pong_rdata(pong_rdata_b)
+        .bank_sel(w_bank_sel_bit),
+        .pea_ifm_addr(w_pea_ifm_addr[SRAM_AWIDTH-1:0]), .pea_ifm_re(w_pea_ifm_re), .pea_ifm_rdata(w_pea_ifm_rdata),
+        .ping_en(w_ifm_ping_en), .ping_addr(w_ifm_ping_addr), .ping_rdata(w_ping_rdata_b),
+        .pong_en(w_ifm_pong_en), .pong_addr(w_ifm_pong_addr), .pong_rdata(w_pong_rdata_b)
     );
 
     ofm_arbiter #(
         .ADDR_WIDTH(SRAM_AWIDTH),
         .DATA_WIDTH(SRAM_DWIDTH)
     ) u_ofm_arbiter (
-        .bank_sel(bank_sel_bit),
-        .pea_ofm_addr(pea_ofm_addr[SRAM_AWIDTH-1:0]), .pea_ofm_we(pea_ofm_we), .pea_ofm_wdata(pea_ofm_wdata),
-        .ping_en(ofm_ping_en), .ping_we(ofm_ping_we), .ping_addr(ofm_ping_addr), .ping_wdata(ofm_ping_wdata),
-        .pong_en(ofm_pong_en), .pong_we(ofm_pong_we), .pong_addr(ofm_pong_addr), .pong_wdata(ofm_pong_wdata)
+        .bank_sel(w_bank_sel_bit),
+        .pea_ofm_addr(w_pea_ofm_addr[SRAM_AWIDTH-1:0]), .pea_ofm_we(w_pea_ofm_we), .pea_ofm_wdata(w_pea_ofm_wdata),
+        .ping_en(w_ofm_ping_en), .ping_we(w_ofm_ping_we), .ping_addr(w_ofm_ping_addr), .ping_wdata(w_ofm_ping_wdata),
+        .pong_en(w_ofm_pong_en), .pong_we(w_ofm_pong_we), .pong_addr(w_ofm_pong_addr), .pong_wdata(w_ofm_pong_wdata)
     );
 
     // =========================================================
     // 4. MUXING TÍN HIỆU PORT B CHO PING / PONG BANK
     // =========================================================
-    assign ping_en_b    = ifm_ping_en | ofm_ping_en;
-    assign ping_we_b    = ofm_ping_we;
-    assign ping_addr_b  = ifm_ping_en ? ifm_ping_addr : ofm_ping_addr;
-    assign ping_wdata_b = ofm_ping_wdata;
+    assign w_ping_en_b    = w_ifm_ping_en | w_ofm_ping_en;
+    assign w_ping_we_b    = w_ofm_ping_we;
+    assign w_ping_addr_b  = w_ifm_ping_en ? w_ifm_ping_addr : w_ofm_ping_addr;
+    assign w_ping_wdata_b = w_ofm_ping_wdata;
 
-    assign pong_en_b    = ifm_pong_en | ofm_pong_en;
-    assign pong_we_b    = ofm_pong_we;
-    assign pong_addr_b  = ifm_pong_en ? ifm_pong_addr : ofm_pong_addr;
-    assign pong_wdata_b = ofm_pong_wdata;
+    assign w_pong_en_b    = w_ifm_pong_en | w_ofm_pong_en;
+    assign w_pong_we_b    = w_ofm_pong_we;
+    assign w_pong_addr_b  = w_ifm_pong_en ? w_ifm_pong_addr : w_ofm_pong_addr;
+    assign w_pong_wdata_b = w_ofm_pong_wdata;
 
     // =========================================================
     // 5. SRAM BANKS
     // =========================================================
-    assign wgt_rdata_a = '0; // DMA không đọc từ Wgt Bank
+    assign w_wgt_rdata_a = '0; // DMA không đọc từ Wgt Bank
 
     sram_tdp #(
         .DWIDTH(SRAM_DWIDTH), .AWIDTH(SRAM_AWIDTH)
     ) u_ping_bank (
         .clk(clk),
-        .ena(1'b1), .wea(ping_we_a), .addra(ping_addr_a), .dina(ping_wdata_a), .douta(ping_rdata_a),
-        .enb(ping_en_b), .web(ping_we_b), .addrb(ping_addr_b), .dinb(ping_wdata_b), .doutb(ping_rdata_b)
+        .ena(1'b1), .wea(w_ping_we_a), .addra(w_ping_addr_a), .dina(w_ping_wdata_a), .douta(w_ping_rdata_a),
+        .enb(w_ping_en_b), .web(w_ping_we_b), .addrb(w_ping_addr_b), .dinb(w_ping_wdata_b), .doutb(w_ping_rdata_b)
     );
 
     sram_tdp #(
         .DWIDTH(SRAM_DWIDTH), .AWIDTH(SRAM_AWIDTH)
     ) u_pong_bank (
         .clk(clk),
-        .ena(1'b1), .wea(pong_we_a), .addra(pong_addr_a), .dina(pong_wdata_a), .douta(pong_rdata_a),
-        .enb(pong_en_b), .web(pong_we_b), .addrb(pong_addr_b), .dinb(pong_wdata_b), .doutb(pong_rdata_b)
+        .ena(1'b1), .wea(w_pong_we_a), .addra(w_pong_addr_a), .dina(w_pong_wdata_a), .douta(w_pong_rdata_a),
+        .enb(w_pong_en_b), .web(w_pong_we_b), .addrb(w_pong_addr_b), .dinb(w_pong_wdata_b), .doutb(w_pong_rdata_b)
     );
 
     sram_tdp #(
         .DWIDTH(SRAM_DWIDTH), .AWIDTH(SRAM_AWIDTH)
     ) u_wgt_bank (
         .clk(clk),
-        .ena(1'b1), .wea(wgt_we_a), .addra(wgt_addr_a), .dina(wgt_wdata_a), .douta(),
-        .enb(pea_wgt_re), .web(1'b0), .addrb(pea_wgt_addr[SRAM_AWIDTH-1:0]), .dinb('0), .doutb(pea_wgt_rdata)
+        .ena(1'b1), .wea(w_wgt_we_a), .addra(w_wgt_addr_a), .dina(w_wgt_wdata_a), .douta(),
+        .enb(w_pea_wgt_re), .web(1'b0), .addrb(w_pea_wgt_addr[SRAM_AWIDTH-1:0]), .dinb('0), .doutb(w_pea_wgt_rdata)
     );
 
     // =========================================================
     // 6. PROCESSING ELEMENT ARRAY (PEA)
     // =========================================================
     // Route AXI-Lite writes to PEA config if address is in 0x100 - 0x1FF
-    logic pea_cfg_we;
-    assign pea_cfg_we = s_axi_awvalid && s_axi_wvalid && (s_axi_awaddr >= 32'h0000_0100) && (s_axi_awaddr < 32'h0000_0200);
+    logic w_pea_cfg_we;
+    // Chỉ kích hoạt khi có xung Write và địa chỉ nằm trong dải 0x100 - 0x1FF
+    assign w_pea_cfg_we = slv_reg_wren && (axi_araddr_reg >= 32'h0000_0100) && (axi_araddr_reg < 32'h0000_0200);
 
     pea_top #(
         .DATA_WIDTH(8),
@@ -282,29 +326,29 @@ module lenet_accelerator #(
     ) u_pea (
         .clk(clk),
         .rst_n(rst_n),
-        .start(mac_start),
-        .done(mac_done),
+        .start(ctrl_mac_start),
+        .done(ctrl_mac_done),
         
         // Config interface mapped to AXI-Lite
         .cfg_addr(s_axi_awaddr[7:0]),
         .cfg_data(s_axi_wdata),
-        .cfg_we(pea_cfg_we),
+        .cfg_we(w_pea_cfg_we),
         
         // Memory interfaces
-        .wb_read_addr(pea_wgt_addr),
-        .wb_re(pea_wgt_re),
-        .wb_read_data(pea_wgt_rdata),
+        .wb_read_addr(w_pea_wgt_addr),
+        .wb_re(w_pea_wgt_re),
+        .wb_read_data(w_pea_wgt_rdata),
         
-        .ifm_read_addr(pea_ifm_addr),
-        .ifm_re(pea_ifm_re),
-        .ifm_read_data(pea_ifm_rdata),
+        .ifm_read_addr(w_pea_ifm_addr),
+        .ifm_re(w_pea_ifm_re),
+        .ifm_read_data(w_pea_ifm_rdata),
         
-        .ofm_write_addr(pea_ofm_addr),
-        .ofm_we(pea_ofm_we),
-        .ofm_write_data(pea_ofm_wdata)
+        .ofm_write_addr(w_pea_ofm_addr),
+        .ofm_we(w_pea_ofm_we),
+        .ofm_write_data(w_pea_ofm_wdata)
     );
 
     // Pool done hardcoded to 1 for now (if Pool is not integrated)
-    assign pool_done = 1'b1;
+    assign ctrl_pool_done = 1'b1;
 
 endmodule

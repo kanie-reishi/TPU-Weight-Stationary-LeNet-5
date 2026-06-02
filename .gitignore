@@ -9,3 +9,6 @@ tb/*.bat
 tb/*.vcd
 tb/*.txt
 tb/*.out
+tb/hex/*.hex
+tb/hex_conv1/*.hex
+/scripts

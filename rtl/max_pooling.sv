@@ -15,10 +15,10 @@ module Max_pooling (
 );
 
     // find max 2-stage comparator
-    wire signed [7:0] max_valule_0_1 = (p00 > p01) ? p00 : p01;
-    wire signed [7:0] max_valule_2_3 = (p10 > p11) ? p10 : p11;
-    wire signed [7:0] max_value      = (max_valule_0_1 > max_valule_2_3) ? max_valule_0_1 : max_valule_2_3;
+    wire signed [7:0] w_max_valule_0_1 = (p00 > p01) ? p00 : p01;
+    wire signed [7:0] w_max_valule_2_3 = (p10 > p11) ? p10 : p11;
+    wire signed [7:0] w_max_value      = (w_max_valule_0_1 > w_max_valule_2_3) ? w_max_valule_0_1 : w_max_valule_2_3;
 
-    assign data_out = max_value;
+    assign data_out = w_max_value;
 
 endmodule

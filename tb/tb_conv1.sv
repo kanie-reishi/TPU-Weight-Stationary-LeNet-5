@@ -125,10 +125,10 @@ module tb_conv1();
     // =========================================================================
     // Mock Data Loaders for Real Weights & IFM
     // =========================================================================
-    logic [127:0] hex_ifm    [0:1023];
-    logic [127:0] hex_weight [0:4095];
-    logic [31:0]  hex_bias   [0:127];
-    logic [127:0] hex_ofm    [0:1023];
+    logic [AXI_DWIDTH-1:0] hex_ifm [0:1023]; // 1024 words
+    logic [127:0]          hex_weight [0:399];
+    logic [31:0]           hex_bias [0:15];
+    logic [AXI_DWIDTH-1:0] hex_ofm [0:6271]; // 8 passes * 784 words
 
     task automatic load_hex_data();
         int pass_base;
@@ -136,20 +136,23 @@ module tb_conv1();
         $readmemh("hex_conv1/weight.hex", hex_weight);
         $readmemh("hex_conv1/bias.hex", hex_bias);
         $readmemh("hex_conv1/expected_ofm.hex", hex_ofm);
-
+        
         // Load IFM into DDR at word 4096 (0x10000 = 65536 bytes)
-        for (int i=0; i<64; i++) mock_ddr[4096 + i] = hex_ifm[i];
+        for (int i=0; i<1024; i++) mock_ddr[4096 + i] = hex_ifm[i];
 
         // Prepare WGT + BIAS per pass. Put them starting at word 8192 (0x20000 = 131072 bytes)
-        // Conv1 takes 25 words of weights and 16 words of biases = 41 words.
-        pass_base = 8192;
-        // 1. Copy 25 words of weights
-        for (int w=0; w<25; w++) begin
-            mock_ddr[pass_base + w] = hex_weight[w];
-        end
-        // 2. Copy 16 words of bias (padded to 128-bit)
-        for (int b=0; b<16; b++) begin
-            mock_ddr[pass_base + 25 + b] = {96'd0, hex_bias[b]};
+        // Conv1 takes 400 words of weights and 16 words of biases = 416 words.
+        localparam NUM_PASSES = 1;
+        for (int p=0; p<NUM_PASSES; p++) begin
+            pass_base = 8192 + p * 416;
+            // 1. Copy 400 words of weights
+            for (int w=0; w<400; w++) begin
+                mock_ddr[pass_base + w] = hex_weight[w];
+            end
+            // 2. Copy 16 words of bias (padded to 128-bit)
+            for (int b=0; b<16; b++) begin
+                mock_ddr[pass_base + 400 + b] = {96'd0, hex_bias[b]};
+            end
         end
     endtask
 
@@ -253,17 +256,17 @@ module tb_conv1();
 
         // 1. Configure PEA registers (Via AXI-Lite offset 0x100)
         $display("[+] Configuring PEA...");
-        axi_lite_write(32'h0000_0100, 5);  // width
-        axi_lite_write(32'h0000_0104, 5);  // height
+        axi_lite_write(32'h0000_0100, 32); // width (IFM 32x32)
+        axi_lite_write(32'h0000_0104, 32); // height
         axi_lite_write(32'h0000_0108, 1);  // cin
-        axi_lite_write(32'h0000_010C, 16); // cout
+        axi_lite_write(32'h0000_010C, 16); // cout (padded to 16)
         axi_lite_write(32'h0000_0110, 5);  // kernel size
-        axi_lite_write(32'h0000_0114, 10); // right shift (10 for Conv5 quantized data)
-        axi_lite_write(32'h0000_0118, 5);  // row stride
+        axi_lite_write(32'h0000_0114, 10); // right shift (10 for Conv1 quantized data)
+        axi_lite_write(32'h0000_0118, 32); // row stride
         axi_lite_write(32'h0000_011C, 1);  // col stride
 
-        // Loop over 8 passes
-        for (int p=0; p<8; p++) begin
+        // Loop over 1 pass for Conv1
+        for (int p=0; p<1; p++) begin
             $display("--------------------------------------------------");
             $display("[+] Starting Pass %0d...", p);
             
@@ -271,12 +274,12 @@ module tb_conv1();
             axi_lite_write(32'h0000_0120, 0);   // weight_base (luôn bắt đầu từ 0 của WGT bank)
             axi_lite_write(32'h0000_0124, 400); // bias_base (word thứ 400 của WGT bank)
             
-            // 2. Load IFM (Cần nạp lại mỗi pass vì hệ thống tự động swap Ping-Pong)
+            // 2. Load IFM
             $display("[+] Pushing OP_LOAD_IFM instruction...");
             // Set Address 0x10000 for IFM
             send_instruction({4'h1, 2'b00, 18'd0, 40'h0000_010000});
-            // Command Load IFM (400 bytes = 25 words for 5x5 image)
-            send_instruction({4'hA, 28'd0, 32'd400});
+            // Command Load IFM (16384 bytes = 1024 words for 32x32 image)
+            send_instruction({4'hA, 28'd0, 32'd16384});
             
             // 3. Load WGT + BIAS cho Pass hiện tại
             // DDR addr: 0x20000 + p * 6656 (6656 bytes = 416 words)
@@ -287,9 +290,9 @@ module tb_conv1();
             send_instruction({4'h5, 60'd0});
             
             // 5. Store OFM cho Pass hiện tại
-            // DDR addr: 0x30000 + p * 16 (16 bytes = 1 word)
-            send_instruction({4'h1, 2'b10, 18'd0, 40'(40'h0000_030000 + p * 16)});
-            send_instruction({4'h7, 28'd0, 32'd16});
+            // DDR addr: 0x30000 + p * 12544 (12544 bytes = 784 words)
+            send_instruction({4'h1, 2'b10, 18'd0, 40'(40'h0000_030000 + p * 12544)});
+            send_instruction({4'h7, 28'd0, 32'd12544});
         end
 
         // 6. Finish
@@ -306,12 +309,15 @@ module tb_conv1();
         begin
             integer errors = 0;
             $display("[+] Verifying OFM Results from Mock DDR...");
-            for (int p=0; p<8; p++) begin
+            for (int p=0; p<1; p++) begin
                 // DDR word index: 0x30000 / 16 = 12288
-                if (mock_ddr[12288 + p] !== hex_ofm[p]) begin
-                    $display("   [FAIL] Pass %0d: Expected %H, Got %H", p, hex_ofm[p], mock_ddr[12288 + p]);
-                    errors++;
-                end else begin
+                for (int i=0; i<784; i++) begin
+                    if (mock_ddr[12288 + p*784 + i] !== hex_ofm[p*784 + i]) begin
+                        $display("   [FAIL] Pass %0d, Word %0d: Expected %H, Got %H", p, i, hex_ofm[p*784 + i], mock_ddr[12288 + p*784 + i]);
+                        errors++;
+                    end
+                end
+                if (errors == 0) begin
                     $display("   [PASS] Pass %0d output matches golden data!", p);
                 end
             end
