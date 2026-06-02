@@ -74,38 +74,6 @@ module pea_systolic_16x16 (
         end
     endgenerate
 
-    // // ------------------------------------------------------------------------
-    // // 1.5 PSUM SKEW BUFFERS (Stagger psum vertically by col index)
-    // // ------------------------------------------------------------------------
-    // logic [15:0][31:0] skewed_psum_in;
-    // logic [15:0]       skewed_psum_en;
-
-    // generate
-    //     for (c = 0; c < 16; c++) begin : skew_col
-    //         localparam delay = 2 * c + 1;
-    //         logic [31:0] sr_p_data [0:delay-1];
-    //         logic        sr_p_en   [0:delay-1];
-            
-    //         always_ff @(posedge clk) begin
-    //             if (!rst_n) begin
-    //                 for (int k=0; k<delay; k++) begin
-    //                     sr_p_data[k] <= 32'd0;
-    //                     sr_p_en[k]   <= 1'b0;
-    //                 end
-    //             end else begin
-    //                 sr_p_data[0] <= psum_in_top[c];
-    //                 sr_p_en[0]   <= psum_en_top[c];
-    //                 for (int k=1; k<delay; k++) begin
-    //                     sr_p_data[k] <= sr_p_data[k-1];
-    //                     sr_p_en[k]   <= sr_p_en[k-1];
-    //                 end
-    //             end
-    //         end
-    //         assign skewed_psum_in[c] = sr_p_data[delay-1];
-    //         assign skewed_psum_en[c] = sr_p_en[delay-1];
-    //     end
-    // endgenerate
-
     // ------------------------------------------------------------------------
     // 2. 16x16 PE GRID
     // ------------------------------------------------------------------------
