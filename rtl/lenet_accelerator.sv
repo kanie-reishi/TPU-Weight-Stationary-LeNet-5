@@ -326,8 +326,8 @@ module lenet_accelerator #(
     ) u_pea (
         .clk(clk),
         .rst_n(rst_n),
-        .start(ctrl_mac_start),
-        .done(ctrl_mac_done),
+        .ctrl_start(ctrl_mac_start),
+        .ctrl_done(ctrl_mac_done),
         
         // Config interface mapped to AXI-Lite
         .cfg_addr(s_axi_awaddr[7:0]),

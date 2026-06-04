@@ -1,149 +1,188 @@
 `timescale 1ns / 1ps
 
+// ============================================================================
+// OFM Post-Processor
+// Pipeline 3-stage: Read PSUM → Add Bias + Right Shift → Clamp + ReLU
+// Throughput: 1 output pixel/cycle (after 2-cycle pipeline latency)
+//
+// Luồng dữ liệu:
+//   Stage 1: Phát lệnh đọc PSUM buffer (1 cycle BRAM latency)
+//   Stage 2: Cộng bias (sign-extend 16→32) + arithmetic right shift (registered)
+//   Stage 3: Saturating clamp [-128,127] + ReLU → ghi OFM SRAM (combinational)
+// ============================================================================
+
 module ofm_post_processor #(
-    parameter DATA_WIDTH = 8,
-    parameter ADDR_WIDTH = 16
+    parameter PSUM_ADDR_W = 10,
+    parameter OFM_ADDR_W  = 16
 )(
     input  logic clk,
     input  logic rst_n,
 
-    // Configuration
+    // ---- Control ----
+    input  logic        start,           // Pulse kích hoạt post-processing
+    output logic        done,            // Pulse báo hoàn thành (pixel cuối đã ghi)
+
+    // ---- Configuration (ổn định trong suốt quá trình xử lý) ----
     input  logic        reg_relu_en,
-    input  logic        reg_pool_en,
-    input  logic [31:0] reg_out_width,
-    input  logic [31:0] reg_channels_out,
+    input  logic [4:0]  reg_right_shift,
+    input  logic [PSUM_ADDR_W-1:0] reg_out_pixels, // Tổng số output pixels (out_w × out_h)
 
-    // Interface from PEA MAC
-    input  logic        pea_we,
-    input  logic [31:0] pea_x,
-    input  logic [31:0] pea_y,
-    input  logic [31:0] pea_cout,
-    input  logic [15:0][7:0] pea_data,
+    // ---- Bias (đã nạp sẵn trước khi start) ----
+    input  logic [15:0][15:0] bias_data, // 16 giá trị bias signed 16-bit
 
-    // Interface to SRAM (OFM Arbiter)
-    output logic                  sram_we,
-    output logic [ADDR_WIDTH-1:0] sram_addr,
-    output logic [15:0][7:0]      sram_data
+    // ---- OFM Address Config ----
+    input  logic [OFM_ADDR_W-1:0] ofm_base_addr,   // Địa chỉ gốc (= cout_tile_id)
+    input  logic [OFM_ADDR_W-1:0] ofm_addr_stride,  // Bước nhảy (= ceil(Cout/16))
+
+    // ---- PSUM Buffer Read Interface ----
+    output logic                   psum_re,
+    output logic [PSUM_ADDR_W-1:0] psum_rd_addr,
+    input  logic [15:0][31:0]      psum_rdata,      // 16 channels × 32-bit accumulated psum
+
+    // ---- OFM SRAM Write Interface ----
+    output logic                  ofm_we,
+    output logic [OFM_ADDR_W-1:0] ofm_addr,
+    output logic [15:0][7:0]      ofm_data
 );
 
     // =========================================================================
-    // 1. ReLU Stage
+    // 1. FSM
     // =========================================================================
-    logic [15:0][7:0] w_relu_out;
-    
-    genvar i;
-    generate
-        for (i = 0; i < 16; i++) begin : gen_relu
-            logic [7:0] w_relu_val;
-            ReLU u_relu (
-                .data_in(pea_data[i]),
-                .data_out(w_relu_val)
-            );
-            assign w_relu_out[i] = reg_relu_en ? w_relu_val : pea_data[i];
-        end
-    endgenerate
+    typedef enum logic [1:0] {
+        PP_IDLE    = 2'd0,
+        PP_RUNNING = 2'd1,
+        PP_DRAIN   = 2'd2
+    } pp_state_t;
 
-    // =========================================================================
-    // 2. Pooling Line Buffer Stage
-    // =========================================================================
-    // We need to buffer 1 row of `w_relu_out`. Max out_width is 32.
-    logic [15:0][7:0] r_line_buffer [0:31];
-    logic [15:0][7:0] w_lb_read_data;
-    
-    // Write to line buffer on every pea_we
-    always_ff @(posedge clk) begin
-        if (pea_we) begin
-            r_line_buffer[pea_x] <= w_relu_out;
-        end
-        // Read combinational (or we can just read from the array directly since pea_x is known)
-    end
-    
-    assign w_lb_read_data = r_line_buffer[pea_x];
+    pp_state_t r_state;
 
-    // =========================================================================
-    // 3. Max Pooling Stage
-    // =========================================================================
-    // We only perform pooling when y is odd, meaning we have the previous even row in the line buffer.
-    // Wait! Since data streams pixel by pixel:
-    // To pool (x-1, y-1), (x, y-1), (x-1, y), (x, y), we need to buffer the PREVIOUS pixel in the SAME row too!
-    // So we need a register to hold the previous pixel of the current row (x-1, y), 
-    // and a register to hold the previous pixel of the line buffer (x-1, y-1).
-    
-    logic [15:0][7:0] r_prev_curr_row;
-    logic [15:0][7:0] r_prev_prev_row;
-    
+    // Bộ đếm pixel (Stage 1)
+    logic [PSUM_ADDR_W-1:0] r_pixel_cnt;
+    logic w_reading;
+    assign w_reading = (r_state == PP_RUNNING);
+
+    // Bộ đếm drain (2 cycles cho pipeline flush)
+    logic [1:0] r_drain_cnt;
+
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            r_prev_curr_row <= '0;
-            r_prev_prev_row <= '0;
+            r_state     <= PP_IDLE;
+            r_pixel_cnt <= '0;
+            r_drain_cnt <= '0;
         end else begin
-            if (pea_we) begin
-                r_prev_curr_row <= w_relu_out;
-                r_prev_prev_row <= w_lb_read_data;
+            case (r_state)
+                PP_IDLE: begin
+                    if (start) begin
+                        r_state     <= PP_RUNNING;
+                        r_pixel_cnt <= '0;
+                    end
+                end
+
+                PP_RUNNING: begin
+                    if (r_pixel_cnt == reg_out_pixels - 1) begin
+                        r_state     <= PP_DRAIN;
+                        r_drain_cnt <= '0;
+                    end else begin
+                        r_pixel_cnt <= r_pixel_cnt + 1;
+                    end
+                end
+
+                PP_DRAIN: begin
+                    if (r_drain_cnt == 2'd1) begin
+                        r_state <= PP_IDLE;
+                    end else begin
+                        r_drain_cnt <= r_drain_cnt + 1;
+                    end
+                end
+
+                default: r_state <= PP_IDLE;
+            endcase
+        end
+    end
+
+    // Done pulse: bật ở chu kỳ cuối của PP_DRAIN (pixel cuối cùng đã ghi ra OFM)
+    assign done = (r_state == PP_DRAIN) && (r_drain_cnt == 2'd1);
+
+    // =========================================================================
+    // 2. Stage 1: Phát lệnh đọc PSUM Buffer
+    // =========================================================================
+    assign psum_re      = w_reading;
+    assign psum_rd_addr = r_pixel_cnt;
+
+    // Bộ tích lũy địa chỉ OFM (cộng dồn stride mỗi pixel)
+    logic [OFM_ADDR_W-1:0] r_ofm_addr_acc;
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            r_ofm_addr_acc <= '0;
+        end else if (start) begin
+            r_ofm_addr_acc <= ofm_base_addr;
+        end else if (w_reading) begin
+            r_ofm_addr_acc <= r_ofm_addr_acc + ofm_addr_stride;
+        end
+    end
+
+    // =========================================================================
+    // 3. Pipeline Register: Stage 1 → Stage 2 (Căn chỉnh trễ BRAM 1 cycle)
+    // =========================================================================
+    logic r_s2_valid;
+    logic [OFM_ADDR_W-1:0] r_s2_addr;
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            r_s2_valid <= 1'b0;
+            r_s2_addr  <= '0;
+        end else begin
+            r_s2_valid <= w_reading;
+            r_s2_addr  <= r_ofm_addr_acc;
+        end
+    end
+
+    // =========================================================================
+    // 4. Stage 2: Cộng Bias (sign-extend 16→32) + Arithmetic Right Shift
+    //    Input: psum_rdata (valid 1 cycle sau lệnh đọc BRAM)
+    //    Output: r_s3_shifted (registered)
+    // =========================================================================
+    logic r_s3_valid;
+    logic [OFM_ADDR_W-1:0] r_s3_addr;
+    logic signed [15:0][31:0] r_s3_shifted;
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            r_s3_valid   <= 1'b0;
+            r_s3_addr    <= '0;
+            r_s3_shifted <= '0;
+        end else begin
+            r_s3_valid <= r_s2_valid;
+            r_s3_addr  <= r_s2_addr;
+
+            for (int i = 0; i < 16; i++) begin
+                r_s3_shifted[i] <= ($signed(psum_rdata[i]) +
+                                    $signed({{16{bias_data[i][15]}}, bias_data[i]}))
+                                   >>> reg_right_shift;
             end
         end
     end
 
-    logic [15:0][7:0] w_pool_out;
-    
+    // =========================================================================
+    // 5. Stage 3: Saturating Clamp [-128, 127] + ReLU [0, 127] (combinational)
+    // =========================================================================
+    genvar gi;
     generate
-        for (i = 0; i < 16; i++) begin : gen_pool
-            Max_pooling u_pool (
-                .p00(r_prev_prev_row[i]), // (x-1, y-1)
-                .p01(w_lb_read_data[i]),  // (x, y-1)
-                .p10(r_prev_curr_row[i]), // (x-1, y)
-                .p11(w_relu_out[i]),      // (x, y)
-                .data_out(w_pool_out[i])
-            );
+        for (gi = 0; gi < 16; gi++) begin : gen_clamp_relu
+            logic signed [7:0] w_clamped;
+
+            // Saturating clamp về dải signed 8-bit
+            assign w_clamped = (r_s3_shifted[gi] > 32'sd127)  ? 8'sd127  :
+                               (r_s3_shifted[gi] < -32'sd128) ? -8'sd128 :
+                               r_s3_shifted[gi][7:0];
+
+            // ReLU: ép giá trị âm về 0
+            assign ofm_data[gi] = (reg_relu_en && w_clamped[7]) ? 8'd0 : w_clamped;
         end
     endgenerate
 
-    // =========================================================================
-    // 4. Output Logic & Address Calculation
-    // =========================================================================
-    // If Pooling is enabled, we only write when (x is odd) and (y is odd).
-    // The target address width and height are halved.
-    
-    logic [31:0] r_final_x, r_final_y;
-    logic [15:0][7:0] r_final_data;
-    logic r_final_we;
-    
-    always_comb begin
-        if (reg_pool_en) begin
-            r_final_we    = pea_we && (pea_x[0] == 1'b1) && (pea_y[0] == 1'b1);
-            r_final_x     = pea_x >> 1;
-            r_final_y     = pea_y >> 1;
-            r_final_data  = w_pool_out;
-        end else begin
-            r_final_we    = pea_we;
-            r_final_x     = pea_x;
-            r_final_y     = pea_y;
-            r_final_data  = w_relu_out;
-        end
-    end
-
-    assign sram_we   = r_final_we;
-    
-    logic [31:0] r_sram_addr_r;
-    logic [31:0] r_next_sram_addr;
-    
-    always_comb begin
-        if (r_final_x == 0 && r_final_y == 0) begin
-            r_next_sram_addr = pea_cout;
-        end else begin
-            r_next_sram_addr = r_sram_addr_r + (reg_channels_out >> 4);
-        end
-    end
-
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            r_sram_addr_r <= '0;
-        end else if (r_final_we) begin
-            r_sram_addr_r <= r_next_sram_addr;
-        end
-    end
-    
-    assign sram_addr = r_next_sram_addr;
-    assign sram_data = r_final_data;
+    assign ofm_we   = r_s3_valid;
+    assign ofm_addr = r_s3_addr;
 
 endmodule

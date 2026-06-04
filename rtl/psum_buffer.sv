@@ -7,7 +7,7 @@ module psum_buffer #(
     input  logic clk,
     input  logic rst_n,
     // Control signals từ FSM
-    input  logic is_first_acc, // Cờ báo hiệu Pass 1
+    input  logic is_first_pass, // Cờ báo hiệu Pass 1
     input  logic psum_re,      // Enable đọc
     input  logic psum_we,      // Enable ghi (trễ 16 clock so với re)
     input  logic [ADDR_WIDTH - 1:0] read_addr,  // 0 -> 63
@@ -50,7 +50,7 @@ module psum_buffer #(
         if (!rst_n) begin
             r_is_first_pass <= 1'b0;
         end else begin
-            r_is_first_pass <= is_first_acc;
+            r_is_first_pass <= is_first_pass;
         end
     end
 
