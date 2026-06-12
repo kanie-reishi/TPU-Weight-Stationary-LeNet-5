@@ -49,17 +49,21 @@ module window_router #(
     end
     
     // Generate 16 MUXes để trích xuất 8-bit từ window_in dựa trên vi lệnh
+    logic [25*DATA_WIDTH-1:0] window_flat;
+    assign window_flat = window_in;
+
     always_comb begin
         for (int r = 0;r < 16; r++) begin
-            // 1. Cắt 10-bit vi lệnh cho từng Hàng 'r' (Dùng biến automatic để cô lập logic trong vòng for)
-            automatic logic [2:0] ky  = w_current_microcode[r*10 + 7 +: 3]; // 3 bits [9:7]
-            automatic logic [2:0] kx  = w_current_microcode[r*10 + 4 +: 3]; // 3 bits [6:4]
-            automatic logic [3:0] cin = w_current_microcode[r*10 + 0 +: 4]; // 4 bits [3:0]
+            logic [2:0] ky;
+            logic [2:0] kx;
+            logic [3:0] cin;
+            logic [25*DATA_WIDTH-1:0] shifted;
+            ky  = w_current_microcode[r*10 + 7 +: 3];
+            kx  = w_current_microcode[r*10 + 4 +: 3];
+            cin = w_current_microcode[r*10 + 0 +: 4];
             
-            // 2. Định tuyến (Routing):
-            // Lấy 1 khối 128-bit tại tọa độ (ky, kx) của Window Array
-            // Sau đó trích xuất ĐÚNG 1 BYTE (8-bit) tại vị trí kênh (cin)
-            routed_data_out[r] = window_in[ky][kx][cin * 8 +: 8];
+            shifted = window_flat >> ((ky * 5 + kx) * 128 + cin * 8);
+            routed_data_out[r] = shifted[7:0];
         end
     end
     //=================================================//

@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module tensor_processing_unit_top #(
+module lenet_accelerator #(
     parameter AXI_AWIDTH  = 40, 
     parameter AXI_DWIDTH  = 64, // AXI Bus width
     parameter SRAM_DWIDTH = 128, // Internal SRAM width
@@ -120,6 +120,7 @@ module tensor_processing_unit_top #(
     logic [SRAM_AWIDTH-1:0] w_ofm_ping_addr;
     logic [SRAM_DWIDTH-1:0] w_ofm_ping_wdata;
 
+    // Arbiter for OFM Pong
     logic                   w_ofm_pong_en, w_ofm_pong_we;
     logic [SRAM_AWIDTH-1:0] w_ofm_pong_addr;
     logic [SRAM_DWIDTH-1:0] w_ofm_pong_wdata;
@@ -179,9 +180,8 @@ module tensor_processing_unit_top #(
     assign s_axi_arready = axi_arready_reg;
     assign s_axi_rvalid  = axi_rvalid_reg;
     assign s_axi_rdata   = axi_rdata_reg;
-    assign s_axi_rresp   = 2'b00; // Luôn trả lời OKAY
+    assign s_axi_rresp   = 2'b00;
 
-    // 1. Chốt địa chỉ đọc (AR Channel)
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             axi_arready_reg <= 1'b0;
@@ -196,11 +196,9 @@ module tensor_processing_unit_top #(
         end
     end
 
-    // 2. Xung kích hoạt Read
     logic slv_reg_rden;
     assign slv_reg_rden = axi_arready_reg && s_axi_arvalid && ~axi_rvalid_reg;
 
-    // 3. Gửi dữ liệu đọc về CPU (R Channel)
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             axi_rvalid_reg <= 1'b0;
@@ -208,16 +206,12 @@ module tensor_processing_unit_top #(
         end else begin
             if (slv_reg_rden) begin
                 axi_rvalid_reg <= 1'b1;
-                
-                // MUX BỘ NHỚ LƯU TRẠNG THÁI (STATUS REGISTERS)
                 case (axi_araddr_reg[7:0])
-                    8'h00: axi_rdata_reg <= {31'd0, ctrl_mac_done}; // CPU đọc 0x00 để biết tính xong chưa
-                    8'h04: axi_rdata_reg <= {31'd0, finish_irq_o};  // Đọc cờ ngắt
-                    // Bạn có thể map thêm các thanh ghi gỡ lỗi (debug) ở đây
-                    default: axi_rdata_reg <= 32'hDEADBEEF; // Báo hiệu đọc sai địa chỉ
+                    8'h00: axi_rdata_reg <= {31'd0, ctrl_mac_done};
+                    8'h04: axi_rdata_reg <= {31'd0, finish_irq_o};
+                    default: axi_rdata_reg <= 32'hDEADBEEF;
                 endcase
             end else if (axi_rvalid_reg && s_axi_rready) begin
-                // CPU đã nhận được dữ liệu, tắt cờ valid
                 axi_rvalid_reg <= 1'b0;
             end
         end
@@ -249,48 +243,28 @@ module tensor_processing_unit_top #(
     logic w_bank_sel_bit;
     assign w_bank_sel_bit = (w_src_bank == 2'b10) ? 1'b1 : 1'b0; // 0=Ping, 1=Pong
 
-    logic pool_busy;
-    logic [SRAM_AWIDTH-1:0] w_pool_ifm_addr, w_pool_ofm_addr;
-    logic                   w_pool_ifm_re, w_pool_ofm_we;
-    logic [SRAM_DWIDTH-1:0] w_pool_ifm_rdata, w_pool_ofm_wdata;
-
-    logic [SRAM_AWIDTH-1:0] w_mux_ifm_addr;
-    logic                   w_mux_ifm_re;
-    
-    assign w_mux_ifm_addr = pool_busy ? w_pool_ifm_addr : w_pea_ifm_addr[SRAM_AWIDTH-1:0];
-    assign w_mux_ifm_re   = pool_busy ? w_pool_ifm_re   : w_pea_ifm_re;
-    assign w_pool_ifm_rdata = w_pea_ifm_rdata; // Shared read data bus
-
     ifm_arbiter #(
         .ADDR_WIDTH(SRAM_AWIDTH),
         .DATA_WIDTH(SRAM_DWIDTH)
     ) u_ifm_arbiter (
         .bank_sel(w_bank_sel_bit),
-        .pea_ifm_addr(w_mux_ifm_addr), .pea_ifm_re(w_mux_ifm_re), .pea_ifm_rdata(w_pea_ifm_rdata),
+        .pea_ifm_addr(w_pea_ifm_addr[SRAM_AWIDTH-1:0]), .pea_ifm_re(w_pea_ifm_re), .pea_ifm_rdata(w_pea_ifm_rdata),
         .ping_en(w_ifm_ping_en), .ping_addr(w_ifm_ping_addr), .ping_rdata(w_ping_rdata_b),
         .pong_en(w_ifm_pong_en), .pong_addr(w_ifm_pong_addr), .pong_rdata(w_pong_rdata_b)
     );
-
-    logic [SRAM_AWIDTH-1:0] w_mux_ofm_addr;
-    logic                   w_mux_ofm_we;
-    logic [SRAM_DWIDTH-1:0] w_mux_ofm_wdata;
-    
-    assign w_mux_ofm_addr  = pool_busy ? w_pool_ofm_addr  : w_pea_ofm_addr[SRAM_AWIDTH-1:0];
-    assign w_mux_ofm_we    = pool_busy ? w_pool_ofm_we    : w_pea_ofm_we;
-    assign w_mux_ofm_wdata = pool_busy ? w_pool_ofm_wdata : w_pea_ofm_wdata;
 
     ofm_arbiter #(
         .ADDR_WIDTH(SRAM_AWIDTH),
         .DATA_WIDTH(SRAM_DWIDTH)
     ) u_ofm_arbiter (
         .bank_sel(w_bank_sel_bit),
-        .pea_ofm_addr(w_mux_ofm_addr), .pea_ofm_we(w_mux_ofm_we), .pea_ofm_wdata(w_mux_ofm_wdata),
+        .pea_ofm_addr(w_pea_ofm_addr[SRAM_AWIDTH-1:0]), .pea_ofm_we(w_pea_ofm_we), .pea_ofm_wdata(w_pea_ofm_wdata),
         .ping_en(w_ofm_ping_en), .ping_we(w_ofm_ping_we), .ping_addr(w_ofm_ping_addr), .ping_wdata(w_ofm_ping_wdata),
         .pong_en(w_ofm_pong_en), .pong_we(w_ofm_pong_we), .pong_addr(w_ofm_pong_addr), .pong_wdata(w_ofm_pong_wdata)
     );
 
     // =========================================================
-    // 4. MUXING TÍN HIỆU PORT B CHO PING / PONG BANK
+    // 4. MUXING PORT B TO PING / PONG BANK
     // =========================================================
     assign w_ping_en_b    = w_ifm_ping_en | w_ofm_ping_en;
     assign w_ping_we_b    = w_ofm_ping_we;
@@ -305,7 +279,7 @@ module tensor_processing_unit_top #(
     // =========================================================
     // 5. SRAM BANKS
     // =========================================================
-    assign w_wgt_rdata_a = '0; // DMA không đọc từ Wgt Bank
+    assign w_wgt_rdata_a = '0; // DMA does not read from Wgt bank
 
     sram_tdp #(
         .DWIDTH(SRAM_DWIDTH), .AWIDTH(SRAM_AWIDTH)
@@ -334,18 +308,16 @@ module tensor_processing_unit_top #(
     // =========================================================
     // 6. PROCESSING ELEMENT ARRAY (PEA)
     // =========================================================
-    // Route AXI-Lite writes to PEA config if address is in 0x100 - 0x3FF
     logic slv_reg_wren;
     logic w_pea_cfg_we;
     
     assign slv_reg_wren = s_axi_wvalid && s_axi_awvalid;
-    // Chỉ kích hoạt khi có xung Write và địa chỉ nằm trong dải 0x100 - 0x3FF
     assign w_pea_cfg_we = slv_reg_wren && (s_axi_awaddr >= 32'h0000_0100) && (s_axi_awaddr < 32'h0000_0600);
 
     pea_top #(
         .DATA_WIDTH(8),
         .PSUM_WIDTH(32),
-        .ADDR_WIDTH(16) // Khớp với ADDR_WIDTH nội bộ của khối PEA
+        .ADDR_WIDTH(16)
     ) u_pea_top (
         .clk(clk),
         .rst_n(rst_n),
@@ -353,12 +325,10 @@ module tensor_processing_unit_top #(
         .ctrl_start(ctrl_mac_start),
         .ctrl_done(ctrl_mac_done),
         
-        // Config interface mapped to AXI-Lite
         .cfg_addr(s_axi_awaddr[15:0]),
         .cfg_data(s_axi_wdata),
         .cfg_we(w_pea_cfg_we),
         
-        // Memory interfaces
         .wb_read_addr(w_pea_wgt_addr),
         .wb_re(w_pea_wgt_re),
         .wb_read_data(w_pea_wgt_rdata),
@@ -372,27 +342,7 @@ module tensor_processing_unit_top #(
         .ofm_write_data(w_pea_ofm_wdata)
     );
 
-    // =========================================================
-    // 7. POOLING ENGINE
-    // =========================================================
-    pool_engine #(
-        .SRAM_AWIDTH(SRAM_AWIDTH),
-        .SRAM_DWIDTH(SRAM_DWIDTH)
-    ) u_pool_engine (
-        .clk(clk),
-        .rst_n(rst_n),
-        .ctrl_pool_start(ctrl_pool_start),
-        .ctrl_pool_done(ctrl_pool_done),
-        .pool_busy_o(pool_busy),
-        .w_ifm_w(w_ifm_w),
-        .w_ifm_h(w_ifm_h),
-        .w_ifm_c(w_ifm_c),
-        .pool_ifm_addr(w_pool_ifm_addr),
-        .pool_ifm_re(w_pool_ifm_re),
-        .pool_ifm_rdata(w_pool_ifm_rdata),
-        .pool_ofm_addr(w_pool_ofm_addr),
-        .pool_ofm_we(w_pool_ofm_we),
-        .pool_ofm_wdata(w_pool_ofm_wdata)
-    );
+    // Pool done hardcoded to 1 for now (if Pool is not integrated)
+    assign ctrl_pool_done = 1'b1;
 
 endmodule

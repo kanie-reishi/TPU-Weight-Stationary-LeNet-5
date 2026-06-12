@@ -88,9 +88,6 @@ module mac_pe #(
             r_swap <= swap_weight_in;
             if (swap_weight_in) begin
                 r_weight <= r_weight_shadow;
-                if ($signed(r_weight_shadow) != 0) begin
-                    $display("[PE_DEBUG] at %0t PE(%0d,%0d): swapped weight=%0d", $time, ROW, COL, $signed(r_weight_shadow));
-                end
             end
             
             r_data    <= data_in;
@@ -99,11 +96,8 @@ module mac_pe #(
             // -------------------------------------------------------------
             // STAGE 2: Multiplier (MREG) & Horizontal Propagation
             // -------------------------------------------------------------
-            r_mult_res    <= $signed(r_weight) * $signed(r_data);
-            if (r_data_en && COL == 0) begin
-                $display("[PE_MULT_DEBUG] at %0t PE(%0d,0) mult: weight=%0d, data=%0d, product=%0d", 
-                         $time, ROW, $signed(r_weight), $signed(r_data), $signed($signed(r_weight) * $signed(r_data)));
-            end
+            // Activation la uint8 (0..255), weight la int8 (signed).
+            r_mult_res    <= $signed(r_weight) * $signed({1'b0, r_data});
             
             r_data_out    <= r_data;
             r_data_en_out <= r_data_en;

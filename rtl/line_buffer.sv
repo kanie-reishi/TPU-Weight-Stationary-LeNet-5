@@ -105,11 +105,12 @@ module line_buffer #(
     end
 
     // Gắn mảng thanh ghi nội bộ ra cổng output
-    always_comb begin
-        for (int r = 0; r < KERNEL_SIZE; r++) begin
-            for (int c = 0; c < KERNEL_SIZE; c++) begin
-                window_data_out[r][c] = r_window_arr[r][c];
+    genvar r, c;
+    generate
+        for (r = 0; r < KERNEL_SIZE; r++) begin : gen_r
+            for (c = 0; c < KERNEL_SIZE; c++) begin : gen_c
+                assign window_data_out[r][c] = r_window_arr[r][c];
             end
         end
-    end
+    endgenerate
 endmodule
